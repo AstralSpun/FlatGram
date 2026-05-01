@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <dimen name="message_avatar_gap">8dp</dimen>
+    <dimen name="message_group_gap">6dp</dimen>
+    <dimen name="message_joined_gap">1dp</dimen>
+</resources>

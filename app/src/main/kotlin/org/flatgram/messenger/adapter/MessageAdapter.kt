@@ -1,61 +1,129 @@
 package org.flatgram.messenger.adapter
 
 import android.view.LayoutInflater
+import android.view.View
 import android.view.ViewGroup
+import androidx.constraintlayout.widget.ConstraintLayout
+import androidx.core.content.res.use
 import androidx.core.view.isVisible
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
-import org.flatgram.messenger.databinding.ItemMessageInBinding
-import org.flatgram.messenger.databinding.ItemMessageOutBinding
+import org.flatgram.messenger.R
+import org.flatgram.messenger.databinding.ItemMessageTextBinding
+import org.flatgram.messenger.td.MessageBubbleGroupPosition
 import org.flatgram.messenger.td.MessageListItem
 import org.flatgram.messenger.td.MessageSendStatus
 
-class MessageAdapter : ListAdapter<MessageListItem, RecyclerView.ViewHolder>(DiffCallback) {
+class MessageAdapter : ListAdapter<MessageListItem, MessageAdapter.MessageViewHolder>(DiffCallback) {
 
-    override fun getItemViewType(position: Int): Int {
-        return if (getItem(position).isOutgoing) VIEW_TYPE_OUT else VIEW_TYPE_IN
-    }
-
-    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
+    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): MessageViewHolder {
         val inflater = LayoutInflater.from(parent.context)
-        return when (viewType) {
-            VIEW_TYPE_OUT -> OutViewHolder(ItemMessageOutBinding.inflate(inflater, parent, false))
-            else -> InViewHolder(ItemMessageInBinding.inflate(inflater, parent, false))
-        }
+        return MessageViewHolder(ItemMessageTextBinding.inflate(inflater, parent, false))
     }
 
-    override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
-        val item = getItem(position)
-        when (holder) {
-            is InViewHolder -> holder.bind(item)
-            is OutViewHolder -> holder.bind(item)
-        }
+    override fun onBindViewHolder(holder: MessageViewHolder, position: Int) {
+        holder.bind(getItem(position))
     }
 
-    private class InViewHolder(
-        private val binding: ItemMessageInBinding
+    class MessageViewHolder(
+        private val binding: ItemMessageTextBinding
     ) : RecyclerView.ViewHolder(binding.root) {
 
         fun bind(item: MessageListItem) {
+            bindItemSpacing(item)
+            bindBubblePosition(item)
+            binding.messageAvatar.visibility = if (item.showAvatar) View.VISIBLE else View.INVISIBLE
+            binding.messageAvatar.text = item.senderName.firstOrNull()?.uppercaseChar()?.toString() ?: "#"
+            binding.messageSender.isVisible = shouldShowSender(item)
+            binding.messageSender.text = item.senderName
             binding.messageText.text = item.text
-            binding.timeText.text = item.time
+            binding.messageTime.text = item.time
+            binding.messageSendState.text = sendStateText(item)
+            binding.messageSendState.isVisible = binding.messageSendState.text.isNotBlank()
+            binding.messageBubble.setBackgroundResource(backgroundFor(item))
+            bindBubbleTextColor(item)
         }
-    }
 
-    private class OutViewHolder(
-        private val binding: ItemMessageOutBinding
-    ) : RecyclerView.ViewHolder(binding.root) {
+        private fun bindItemSpacing(item: MessageListItem) {
+            val topGap = if (
+                item.groupPosition == MessageBubbleGroupPosition.SINGLE ||
+                item.groupPosition == MessageBubbleGroupPosition.TOP
+            ) {
+                R.dimen.message_group_gap
+            } else {
+                R.dimen.message_joined_gap
+            }
 
-        fun bind(item: MessageListItem) {
-            binding.messageText.text = item.text
-            binding.timeText.text = item.time
-            binding.statusText.isVisible = item.status != MessageSendStatus.NONE
-            binding.statusText.text = when (item.status) {
-                MessageSendStatus.SENDING -> "Sending"
-                MessageSendStatus.FAILED -> "Failed"
+            binding.root.setPadding(
+                binding.root.paddingLeft,
+                itemView.resources.getDimensionPixelSize(topGap),
+                binding.root.paddingRight,
+                binding.root.paddingBottom
+            )
+        }
+
+        private fun bindBubblePosition(item: MessageListItem) {
+            val params = binding.messageBubble.layoutParams as ConstraintLayout.LayoutParams
+            if (item.isOutgoing) {
+                params.horizontalBias = 1f
+                params.startToStart = ConstraintLayout.LayoutParams.UNSET
+                params.startToEnd = ConstraintLayout.LayoutParams.UNSET
+                params.endToEnd = ConstraintLayout.LayoutParams.PARENT_ID
+                params.marginStart = 0
+            } else {
+                params.horizontalBias = 0f
+                params.startToStart = ConstraintLayout.LayoutParams.UNSET
+                params.startToEnd = R.id.messageAvatar
+                params.endToEnd = ConstraintLayout.LayoutParams.PARENT_ID
+                params.marginStart = itemView.resources.getDimensionPixelSize(R.dimen.message_avatar_gap)
+            }
+            binding.messageBubble.layoutParams = params
+        }
+
+        private fun shouldShowSender(item: MessageListItem): Boolean {
+            if (item.isOutgoing || item.senderName.isBlank()) return false
+            return item.groupPosition != MessageBubbleGroupPosition.MIDDLE &&
+                item.groupPosition != MessageBubbleGroupPosition.BOTTOM
+        }
+
+        private fun backgroundFor(item: MessageListItem): Int {
+            return if (item.isOutgoing) {
+                when (item.groupPosition) {
+                    MessageBubbleGroupPosition.SINGLE -> R.drawable.bg_message_out
+                    MessageBubbleGroupPosition.TOP -> R.drawable.bg_message_out_join_next
+                    MessageBubbleGroupPosition.MIDDLE -> R.drawable.bg_message_out_join_both
+                    MessageBubbleGroupPosition.BOTTOM -> R.drawable.bg_message_out_join_prev
+                }
+            } else {
+                when (item.groupPosition) {
+                    MessageBubbleGroupPosition.SINGLE -> R.drawable.bg_message_in
+                    MessageBubbleGroupPosition.TOP -> R.drawable.bg_message_in_join_next
+                    MessageBubbleGroupPosition.MIDDLE -> R.drawable.bg_message_in_join_both
+                    MessageBubbleGroupPosition.BOTTOM -> R.drawable.bg_message_in_join_prev
+                }
+            }
+        }
+
+        private fun sendStateText(item: MessageListItem): String {
+            if (!item.isOutgoing) return ""
+            return when (item.status) {
+                MessageSendStatus.SENDING -> "..."
+                MessageSendStatus.FAILED -> "!"
                 MessageSendStatus.NONE -> ""
             }
+        }
+
+        private fun bindBubbleTextColor(item: MessageListItem) {
+            val textColorAttr = if (item.isOutgoing) {
+                com.google.android.material.R.attr.colorOnPrimaryContainer
+            } else {
+                com.google.android.material.R.attr.colorOnSurfaceVariant
+            }
+            val textColor = itemView.context.resolveColor(textColorAttr)
+            binding.messageText.setTextColor(textColor)
+            binding.messageTime.setTextColor(textColor)
+            binding.messageSendState.setTextColor(textColor)
         }
     }
 
@@ -68,9 +136,8 @@ class MessageAdapter : ListAdapter<MessageListItem, RecyclerView.ViewHolder>(Dif
             return oldItem == newItem
         }
     }
+}
 
-    private companion object {
-        const val VIEW_TYPE_IN = 1
-        const val VIEW_TYPE_OUT = 2
-    }
+private fun android.content.Context.resolveColor(attr: Int): Int {
+    return obtainStyledAttributes(intArrayOf(attr)).use { it.getColor(0, 0) }
 }

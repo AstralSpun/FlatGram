@@ -11,6 +11,7 @@ import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArraySet
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.abs
 
 object TdMessageRepository : TdAuthClient.UpdateListener {
 
@@ -21,10 +22,13 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
 
     private const val TAG = "TdMessageRepository"
     private const val PAGE_SIZE = 50
+    private const val COMMON_MERGE_TIME_SECONDS = 900
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val listeners = CopyOnWriteArraySet<Listener>()
     private val messagesByChat = ConcurrentHashMap<Long, ConcurrentHashMap<Long, TdApi.Message>>()
+    private val usersById = ConcurrentHashMap<Long, TdApi.User>()
+    private val chatsById = ConcurrentHashMap<Long, TdApi.Chat>()
     private val loadingOlder = ConcurrentHashMap<Long, AtomicBoolean>()
     private val endReached = ConcurrentHashMap.newKeySet<Long>()
     private val viewedMessages = ConcurrentHashMap<Long, MutableSet<Long>>()
@@ -116,6 +120,24 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
                 publish(update.message.chatId)
             }
 
+            is TdApi.UpdateNewChat -> {
+                chatsById[update.chat.id] = update.chat
+                publishAffectedConversationsBySender(TdApi.MessageSenderChat(update.chat.id))
+            }
+
+            is TdApi.UpdateUser -> {
+                usersById[update.user.id] = update.user
+                publishAffectedConversationsBySender(TdApi.MessageSenderUser(update.user.id))
+            }
+
+            is TdApi.UpdateChatTitle -> {
+                val chat = chatsById[update.chatId]
+                if (chat != null) {
+                    chat.title = update.title
+                }
+                publishAffectedConversationsBySender(TdApi.MessageSenderChat(update.chatId))
+            }
+
             is TdApi.UpdateMessageContent -> {
                 updateMessage(update.chatId, update.messageId) { message ->
                     message.content = update.newContent
@@ -182,6 +204,7 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
     private fun putMessage(message: TdApi.Message) {
         val cache = messagesByChat.getOrPut(message.chatId) { ConcurrentHashMap() }
         cache[message.id] = message
+        requestSenderName(message.senderId)
     }
 
     private fun updateMessage(
@@ -197,8 +220,9 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
     private fun publish(chatId: Long) {
         val items = messagesByChat[chatId]
             ?.values
-            ?.sortedBy { it.id }
+            ?.sortedWith(compareBy<TdApi.Message> { it.sortTimestamp() }.thenBy { it.id })
             ?.map { it.toListItem() }
+            ?.withBubbleGroups()
             .orEmpty()
 
         mainHandler.post {
@@ -212,11 +236,106 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
         return MessageListItem(
             id = id,
             chatId = chatId,
+            senderId = senderId.senderKey(),
+            senderName = senderId.senderDisplayName(),
             text = MessageContentFormatter.format(content),
+            date = date,
             time = date.toMessageTime(),
             isOutgoing = isOutgoing,
-            status = sendingState.toSendStatus()
+            status = sendingState.toSendStatus(),
+            groupPosition = MessageBubbleGroupPosition.SINGLE,
+            showAvatar = !isOutgoing
         )
+    }
+
+    private fun List<MessageListItem>.withBubbleGroups(): List<MessageListItem> {
+        return mapIndexed { index, item ->
+            val previous = getOrNull(index - 1)
+            val next = getOrNull(index + 1)
+            val joinsPrevious = canMerge(previous, item)
+            val joinsNext = canMerge(item, next)
+            val groupPosition = when {
+                joinsPrevious && joinsNext -> MessageBubbleGroupPosition.MIDDLE
+                joinsPrevious -> MessageBubbleGroupPosition.BOTTOM
+                joinsNext -> MessageBubbleGroupPosition.TOP
+                else -> MessageBubbleGroupPosition.SINGLE
+            }
+
+            item.copy(
+                groupPosition = groupPosition,
+                showAvatar = !item.isOutgoing && !joinsNext
+            )
+        }
+    }
+
+    private fun canMerge(first: MessageListItem?, second: MessageListItem?): Boolean {
+        if (first == null || second == null) return false
+        if (first.isOutgoing != second.isOutgoing) return false
+        if (first.senderId != second.senderId) return false
+        return abs(second.date - first.date) <= COMMON_MERGE_TIME_SECONDS
+    }
+
+    private fun TdApi.Message.sortTimestamp(): Int {
+        return if (date == 0 && sendingState is TdApi.MessageSendingStatePending) {
+            Int.MAX_VALUE
+        } else {
+            date
+        }
+    }
+
+    private fun TdApi.MessageSender?.senderKey(): String {
+        return when (this) {
+            is TdApi.MessageSenderUser -> "user:$userId"
+            is TdApi.MessageSenderChat -> "chat:$chatId"
+            else -> "unknown"
+        }
+    }
+
+    private fun TdApi.MessageSender?.senderDisplayName(): String {
+        return when (this) {
+            is TdApi.MessageSenderUser -> usersById[userId]?.displayName().orEmpty()
+            is TdApi.MessageSenderChat -> chatsById[chatId]?.title.orEmpty()
+            else -> ""
+        }
+    }
+
+    private fun requestSenderName(sender: TdApi.MessageSender?) {
+        when (sender) {
+            is TdApi.MessageSenderUser -> {
+                if (usersById.containsKey(sender.userId)) return
+                TdAuthClient.send(TdApi.GetUser(sender.userId), emitErrors = false) { result ->
+                    if (result is TdApi.User) {
+                        usersById[result.id] = result
+                        publishAffectedConversationsBySender(TdApi.MessageSenderUser(result.id))
+                    }
+                }
+            }
+
+            is TdApi.MessageSenderChat -> {
+                if (chatsById.containsKey(sender.chatId)) return
+                TdAuthClient.send(TdApi.GetChat(sender.chatId), emitErrors = false) { result ->
+                    if (result is TdApi.Chat) {
+                        chatsById[result.id] = result
+                        publishAffectedConversationsBySender(TdApi.MessageSenderChat(result.id))
+                    }
+                }
+            }
+        }
+    }
+
+    private fun publishAffectedConversationsBySender(sender: TdApi.MessageSender) {
+        val senderKey = sender.senderKey()
+        messagesByChat.forEach { (chatId, messages) ->
+            if (messages.values.any { it.senderId.senderKey() == senderKey }) {
+                publish(chatId)
+            }
+        }
+    }
+
+    private fun TdApi.User.displayName(): String {
+        return listOf(firstName, lastName)
+            .filterNot { it.isNullOrBlank() }
+            .joinToString(" ")
     }
 
     private fun TdApi.MessageSendingState?.toSendStatus(): MessageSendStatus {
