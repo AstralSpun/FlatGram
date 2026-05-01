@@ -11,6 +11,10 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.FlatGram">
         <activity
+            android:name=".ui.chats.ChatListActivity"
+            android:exported="false" />
+
+        <activity
             android:name=".ui.login.LoginActivity"
             android:exported="true"
             android:windowSoftInputMode="adjustResize">

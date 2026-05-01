@@ -20,8 +20,13 @@ object TdAuthClient {
         fun onTdError(error: TdApi.Error)
     }
 
+    interface UpdateListener {
+        fun onTdUpdate(update: TdApi.Update)
+    }
+
     private val mainHandler = Handler(Looper.getMainLooper())
     private val listeners = CopyOnWriteArraySet<Listener>()
+    private val updateListeners = CopyOnWriteArraySet<UpdateListener>()
 
     private var client: Client? = null
 
@@ -53,6 +58,14 @@ object TdAuthClient {
 
     fun removeListener(listener: Listener) {
         listeners.remove(listener)
+    }
+
+    fun addUpdateListener(listener: UpdateListener) {
+        updateListeners.add(listener)
+    }
+
+    fun removeUpdateListener(listener: UpdateListener) {
+        updateListeners.remove(listener)
     }
 
     fun setPhoneNumber(phoneNumber: String) {
@@ -90,6 +103,9 @@ object TdAuthClient {
         Log.d("TdAuthClient", "update: ${update.javaClass.simpleName}")
         if (update is TdApi.UpdateAuthorizationState) {
             handleAuthorizationState(update.authorizationState)
+        }
+        if (update is TdApi.Update) {
+            updateListeners.forEach { it.onTdUpdate(update) }
         }
     }
 
@@ -150,7 +166,7 @@ object TdAuthClient {
         }
     }
 
-    private fun send(
+    fun send(
         function: TdApi.Function<*>,
         emitErrors: Boolean = true,
         onResult: (TdApi.Object) -> Unit = {}

@@ -1,5 +1,6 @@
 package org.flatgram.messenger.ui.login
 
+import android.content.Intent
 import android.os.Bundle
 import android.text.InputType
 import androidx.activity.enableEdgeToEdge
@@ -8,12 +9,14 @@ import androidx.core.view.isVisible
 import org.drinkless.tdlib.TdApi
 import org.flatgram.messenger.databinding.ActivityLoginBinding
 import org.flatgram.messenger.td.TdAuthClient
+import org.flatgram.messenger.ui.chats.ChatListActivity
 
 class LoginActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityLoginBinding
 
     private var currentState: TdApi.AuthorizationState? = null
+    private var openedChatList = false
 
     private val tdListener = object : TdAuthClient.Listener {
         override fun onAuthorizationState(state: TdApi.AuthorizationState) {
@@ -145,6 +148,7 @@ class LoginActivity : AppCompatActivity() {
             }
 
             is TdApi.AuthorizationStateReady -> {
+                openChatList()
                 binding.title.text = "Signed in"
                 binding.subtitle.text = "TDLib is ready."
                 binding.inputLayout.isVisible = false
@@ -200,5 +204,12 @@ class LoginActivity : AppCompatActivity() {
     private fun setLoading(loading: Boolean) {
         binding.progress.isVisible = loading
         binding.submitButton.isEnabled = !loading
+    }
+
+    private fun openChatList() {
+        if (openedChatList) return
+        openedChatList = true
+        startActivity(Intent(this, ChatListActivity::class.java))
+        finish()
     }
 }
