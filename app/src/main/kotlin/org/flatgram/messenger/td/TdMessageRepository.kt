@@ -62,6 +62,10 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
         TdAuthClient.send(TdApi.CloseChat(chatId), emitErrors = false)
     }
 
+    fun markVisibleMessagesRead(chatId: Long) {
+        markRecentMessagesRead(chatId, messagesByChat[chatId]?.values.orEmpty())
+    }
+
     fun loadInitial(chatId: Long) {
         endReached.remove(chatId)
         loadHistory(chatId = chatId, fromMessageId = 0L, isOlderPage = false)
@@ -187,7 +191,6 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
                     }
                     result.messages.forEach(::putMessage)
                     publish(chatId)
-                    markRecentMessagesRead(chatId, result.messages.toList())
                 }
 
                 is TdApi.Error -> {
@@ -229,7 +232,6 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
             listeners.forEach { it.onMessagesChanged(chatId, items) }
         }
 
-        markRecentMessagesRead(chatId, messagesByChat[chatId]?.values.orEmpty())
     }
 
     private fun TdApi.Message.toListItem(): MessageListItem {

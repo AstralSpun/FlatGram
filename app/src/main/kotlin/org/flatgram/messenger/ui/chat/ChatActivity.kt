@@ -39,6 +39,7 @@ class ChatActivity : AppCompatActivity() {
                 if (shouldScrollToBottom && messages.isNotEmpty()) {
                     binding.messageRecycler.scrollToPosition(messages.lastIndex)
                 }
+                TdMessageRepository.markVisibleMessagesRead(chatId)
             }
         }
 
