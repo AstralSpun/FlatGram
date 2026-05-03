@@ -10,6 +10,8 @@ import java.util.Date
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArraySet
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.abs
 
@@ -34,6 +36,9 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
     private val endReached = ConcurrentHashMap.newKeySet<Long>()
     private val viewedMessages = ConcurrentHashMap<Long, MutableSet<Long>>()
     private val storedOldestMessageIds = ConcurrentHashMap<Long, Long>()
+    private val pendingPublishes = ConcurrentHashMap.newKeySet<Long>()
+    private val dirtyPublishes = ConcurrentHashMap.newKeySet<Long>()
+    private val listExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private val started = AtomicBoolean(false)
 
     private var roomStore: RoomMessageStore? = null
@@ -245,7 +250,7 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
                         publish(chatId)
                         return@send
                     }
-                    result.messages.forEach(::putMessage)
+                    putMessages(result.messages, shouldRequestSenders = !isOlderPage)
                     persistMessages(chatId)
                     publish(chatId)
                 }
@@ -282,7 +287,9 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
         roomStore?.loadOlderAsync(chatId, oldestMessageId, PAGE_SIZE) { storedItems ->
             if (storedItems.isNotEmpty()) {
                 putStoredItems(chatId, storedItems)
+                loadingOlder[chatId]?.set(false)
                 publish(chatId)
+                return@loadOlderAsync
             }
             loadHistory(chatId = chatId, fromMessageId = oldestMessageId, isOlderPage = true)
         } ?: loadHistory(chatId = chatId, fromMessageId = oldestMessageId, isOlderPage = true)
@@ -324,13 +331,18 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
     }
 
     private fun oldestMessageId(chatId: Long): Long {
-        return listItems(chatId)
-            .asSequence()
-            .map { it.id }
-            .filter { it > 0L }
-            .minOrNull()
-            ?: storedOldestMessageIds[chatId]
-            ?: 0L
+        return minOfPositive(
+            messageCache.oldestMessageId(chatId),
+            storedOldestMessageIds[chatId] ?: 0L
+        )
+    }
+
+    private fun minOfPositive(first: Long, second: Long): Long {
+        return when {
+            first <= 0L -> second
+            second <= 0L -> first
+            else -> minOf(first, second)
+        }
     }
 
     private fun rememberStoredOldest(chatId: Long, items: List<MessageListItem>) {
@@ -344,8 +356,19 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
     }
 
     private fun putMessage(message: TdApi.Message) {
-        messageCache.put(message)
-        requestSender(message)
+        val changed = messageCache.put(message)
+        if (changed) {
+            requestSender(message)
+        }
+    }
+
+    private fun putMessages(messages: Array<TdApi.Message>, shouldRequestSenders: Boolean) {
+        messages.forEach { message ->
+            val changed = messageCache.put(message)
+            if (changed && shouldRequestSenders) {
+                requestSender(message)
+            }
+        }
     }
 
     private fun updateMessage(
@@ -360,10 +383,20 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
     }
 
     private fun publish(chatId: Long) {
-        val items = listItems(chatId)
+        if (!pendingPublishes.add(chatId)) {
+            dirtyPublishes.add(chatId)
+            return
+        }
 
-        mainHandler.post {
-            listeners.forEach { it.onMessagesChanged(chatId, items) }
+        listExecutor.execute {
+            val items = listItems(chatId)
+            mainHandler.post {
+                listeners.forEach { it.onMessagesChanged(chatId, items) }
+                pendingPublishes.remove(chatId)
+                if (dirtyPublishes.remove(chatId)) {
+                    publish(chatId)
+                }
+            }
         }
     }
 

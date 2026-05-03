@@ -14,9 +14,9 @@ internal class MessageCache(
         return messagesByChat[chatId]?.values.orEmpty()
     }
 
-    fun put(message: TdApi.Message) {
+    fun put(message: TdApi.Message): Boolean {
         val cache = messagesByChat.getOrPut(message.chatId) { ConcurrentHashMap() }
-        cache[message.id] = message
+        return cache.put(message.id, message) !== message
     }
 
     fun update(chatId: Long, messageId: Long, block: (TdApi.Message) -> Unit): Boolean {
@@ -34,6 +34,15 @@ internal class MessageCache(
     fun removeAll(chatId: Long, messageIds: LongArray) {
         val cache = messagesByChat[chatId] ?: return
         messageIds.forEach(cache::remove)
+    }
+
+    fun oldestMessageId(chatId: Long): Long {
+        return messagesByChat[chatId]
+            ?.keys
+            ?.asSequence()
+            ?.filter { it > 0L }
+            ?.minOrNull()
+            ?: 0L
     }
 
     fun trim(chatId: Long) {
