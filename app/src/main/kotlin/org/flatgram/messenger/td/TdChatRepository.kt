@@ -20,24 +20,61 @@ object TdChatRepository : TdAuthClient.UpdateListener {
     }
 
     private const val TAG = "TdChatRepository"
-    private const val MAIN_LIST_LIMIT = 100
+    private const val MAIN_LIST_INITIAL_LIMIT = 200
+    private const val MAIN_LIST_RECOVERY_LIMIT = 100
+    private const val PUBLISH_THROTTLE_MS = 250L
+    private const val MAX_BACKFILL_GET_CHAT = 24
+    private const val AUTO_DOWNLOAD_AVATAR_LIMIT = 40
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val listeners = CopyOnWriteArraySet<Listener>()
-    private val chats = ConcurrentHashMap<Long, TdApi.Chat>()
     private val started = AtomicBoolean(false)
+    private val refreshInFlight = AtomicBoolean(false)
+    private val pendingChats = ConcurrentHashMap.newKeySet<Long>()
+    private val publishScheduled = AtomicBoolean(false)
+
+    private var roomStore: RoomChatListStore? = null
+    @Volatile
+    private var lastPublishedItems: List<ChatListItem> = emptyList()
+    @Volatile
+    private var initialCacheLoaded = false
+    @Volatile
+    private var publishedToListeners = false
 
     fun start(context: Context) {
         TdAuthClient.init(context)
+        TdEntityCache.start()
+        if (roomStore == null) {
+            roomStore = RoomChatListStore(context.applicationContext)
+            roomStore?.loadAsync { cachedItems ->
+                initialCacheLoaded = true
+                if (cachedItems.isNotEmpty() && lastPublishedItems.isEmpty()) {
+                    lastPublishedItems = cachedItems
+                    publishSnapshot()
+                } else if (cachedItems.isNotEmpty()) {
+                    val mergedItems = mergeItems(cachedItems, lastPublishedItems)
+                    if (mergedItems != lastPublishedItems) {
+                        lastPublishedItems = mergedItems
+                        publishSnapshot()
+                    }
+                }
+            }
+        }
         if (started.compareAndSet(false, true)) {
             TdAuthClient.addUpdateListener(this)
         }
+        publishSnapshot()
         refreshChats()
     }
 
     fun addListener(listener: Listener) {
         listeners.add(listener)
-        publish()
+        if (initialCacheLoaded || lastPublishedItems.isNotEmpty()) {
+            publishSnapshot()
+        }
+        if (TdEntityCache.chatList().isNotEmpty()) {
+            schedulePublish()
+        }
     }
 
     fun removeListener(listener: Listener) {
@@ -45,14 +82,20 @@ object TdChatRepository : TdAuthClient.UpdateListener {
     }
 
     fun refreshChats() {
-        TdAuthClient.send(TdApi.GetChats(TdApi.ChatListMain(), MAIN_LIST_LIMIT)) { result ->
+        if (!refreshInFlight.compareAndSet(false, true)) return
+
+        TdAuthClient.send(TdApi.GetChats(TdApi.ChatListMain(), MAIN_LIST_INITIAL_LIMIT)) { result ->
             when (result) {
-                is TdApi.Chats -> result.chatIds.forEach { chatId -> fetchChat(chatId) }
-                is TdApi.Error -> emitError(result.message)
+                is TdApi.Chats -> handleChatSnapshot(result.chatIds)
+                is TdApi.Error -> {
+                    refreshInFlight.set(false)
+                    emitError(result.message)
+                }
             }
         }
 
-        TdAuthClient.send(TdApi.LoadChats(TdApi.ChatListMain(), MAIN_LIST_LIMIT), emitErrors = false) { result ->
+        TdAuthClient.send(TdApi.LoadChats(TdApi.ChatListMain(), MAIN_LIST_RECOVERY_LIMIT), emitErrors = false) { result ->
+            refreshInFlight.set(false)
             if (result is TdApi.Error && result.code != 404) {
                 emitError(result.message)
             }
@@ -62,18 +105,20 @@ object TdChatRepository : TdAuthClient.UpdateListener {
     override fun onTdUpdate(update: TdApi.Update) {
         when (update) {
             is TdApi.UpdateNewChat -> {
-                chats[update.chat.id] = update.chat
-                publish()
+                TdEntityCache.putChat(update.chat)
+                schedulePublish()
             }
 
             is TdApi.UpdateChatPosition -> {
-                updateChat(update.chatId) { chat ->
+                updateChat(update.chatId, fallback = { applyCachedPosition(update.chatId, update.position) }) { chat ->
                     chat.positions = updatePositions(chat.positions, update.position)
                 }
             }
 
             is TdApi.UpdateChatLastMessage -> {
-                updateChat(update.chatId) { chat ->
+                updateChat(update.chatId, fallback = {
+                    applyCachedLastMessage(update.chatId, update.lastMessage, update.positions)
+                }) { chat ->
                     chat.lastMessage = update.lastMessage
                     if (update.positions.isNotEmpty()) {
                         chat.positions = update.positions
@@ -82,21 +127,42 @@ object TdChatRepository : TdAuthClient.UpdateListener {
             }
 
             is TdApi.UpdateChatReadInbox -> {
-                updateChat(update.chatId) { chat ->
+                updateChat(update.chatId, fallback = {
+                    updateCachedItem(update.chatId) { item ->
+                        item.copy(unreadCount = update.unreadCount)
+                    }
+                }) { chat ->
                     chat.lastReadInboxMessageId = update.lastReadInboxMessageId
                     chat.unreadCount = update.unreadCount
                 }
             }
 
             is TdApi.UpdateChatTitle -> {
-                updateChat(update.chatId) { chat ->
+                updateChat(update.chatId, fallback = {
+                    updateCachedItem(update.chatId) { item ->
+                        item.copy(title = update.title.ifBlank { item.title })
+                    }
+                }) { chat ->
                     chat.title = update.title
                 }
             }
 
             is TdApi.UpdateChatPhoto -> {
-                updateChat(update.chatId) { chat ->
+                updateChat(update.chatId, fallback = {
+                    updateCachedItem(update.chatId) { item ->
+                        val avatar = TdEntityCache.chatPhotoAvatar(update.photo)
+                        item.copy(avatarFileId = avatar.fileId, avatarPath = avatar.path)
+                    }
+                }) { chat ->
                     chat.photo = update.photo
+                }
+            }
+
+            is TdApi.UpdateFile -> {
+                TdEntityCache.putFile(update.file)
+                val affectedChatIds = TdEntityCache.chatIdsUsingAvatarFile(update.file.id)
+                if (affectedChatIds.any { chatId -> TdEntityCache.chat(chatId) != null }) {
+                    schedulePublish()
                 }
             }
 
@@ -110,22 +176,31 @@ object TdChatRepository : TdAuthClient.UpdateListener {
         }
     }
 
-    private fun updateChat(chatId: Long, block: (TdApi.Chat) -> Unit) {
-        val chat = chats[chatId]
-        if (chat == null) {
-            fetchChat(chatId)
+    private fun updateChat(
+        chatId: Long,
+        fallback: () -> Boolean = { false },
+        block: (TdApi.Chat) -> Unit
+    ) {
+        val updated = TdEntityCache.updateChat(chatId, block)
+        if (!updated) {
+            if (!fallback()) {
+                fetchChat(chatId)
+            }
             return
         }
-        block(chat)
-        publish()
+        schedulePublish()
     }
 
     private fun fetchChat(chatId: Long) {
+        if (TdEntityCache.hasChat(chatId)) return
+        if (!pendingChats.add(chatId)) return
+
         TdAuthClient.send(TdApi.GetChat(chatId), emitErrors = false) { result ->
+            pendingChats.remove(chatId)
             when (result) {
                 is TdApi.Chat -> {
-                    chats[result.id] = result
-                    publish()
+                    TdEntityCache.putChat(result)
+                    schedulePublish()
                 }
 
                 is TdApi.Error -> Log.d(TAG, "GetChat($chatId) failed: ${result.code} ${result.message}")
@@ -133,33 +208,175 @@ object TdChatRepository : TdAuthClient.UpdateListener {
         }
     }
 
-    private fun publish() {
-        val items = chats.values
-            .mapNotNull { chat -> chat.toListItem() }
-            .sortedWith(
-                compareByDescending<ChatListItem> { it.isPinned }
-                    .thenByDescending { it.order }
-                    .thenByDescending { it.id }
-            )
-
+    private fun publishSnapshot() {
+        val items = lastPublishedItems
         mainHandler.post {
+            if (listeners.isNotEmpty()) {
+                publishedToListeners = true
+            }
             listeners.forEach { it.onChatsChanged(items) }
         }
     }
 
-    private fun TdApi.Chat.toListItem(): ChatListItem? {
+    private fun schedulePublish() {
+        if (!publishScheduled.compareAndSet(false, true)) return
+
+        mainHandler.postDelayed({
+            publishScheduled.set(false)
+            publish()
+        }, PUBLISH_THROTTLE_MS)
+    }
+
+    private fun publish() {
+        val tdItems = TdEntityCache.chatList()
+            .mapNotNull { chat -> chat.toListItem(requestAvatar = false) }
+            .sortedForChatList()
+            .mapIndexed { index, item ->
+                if (index < AUTO_DOWNLOAD_AVATAR_LIMIT) {
+                    TdEntityCache.chat(item.id)?.toListItem(requestAvatar = true) ?: item
+                } else {
+                    item
+                }
+            }
+        val items = mergeWithCachedItems(tdItems)
+
+        if (items == lastPublishedItems) {
+            if (items.isEmpty() && initialCacheLoaded && !publishedToListeners) {
+                publishSnapshot()
+            }
+            return
+        }
+        lastPublishedItems = items
+        roomStore?.saveAsync(items)
+
+        publishSnapshot()
+    }
+
+    private fun TdApi.Chat.toListItem(requestAvatar: Boolean): ChatListItem? {
         val mainPosition = positions.firstOrNull { it.list is TdApi.ChatListMain && it.order != 0L }
             ?: return null
+        val avatar = TdEntityCache.chatAvatar(this)
+        if (requestAvatar) {
+            TdEntityCache.requestAvatarForChat(this) {
+                schedulePublish()
+            }
+        }
 
         return ChatListItem(
             id = id,
             title = title.ifBlank { "Chat $id" },
+            avatarFileId = avatar.fileId,
+            avatarPath = avatar.path,
             lastMessage = lastMessage.toPreview(),
             time = lastMessage?.date?.toMessageTime().orEmpty(),
             unreadCount = unreadCount,
             isPinned = mainPosition.isPinned,
             order = mainPosition.order
         )
+    }
+
+    private fun handleChatSnapshot(chatIds: LongArray) {
+        val missingIds = chatIds
+            .asSequence()
+            .filterNot { TdEntityCache.hasChat(it) }
+            .take(MAX_BACKFILL_GET_CHAT)
+            .toList()
+
+        missingIds.forEach(::fetchChat)
+
+        if (missingIds.isEmpty()) {
+            schedulePublish()
+        }
+    }
+
+    private fun applyCachedPosition(chatId: Long, position: TdApi.ChatPosition): Boolean {
+        if (position.list !is TdApi.ChatListMain) return hasPublishedItem(chatId)
+
+        return if (position.order == 0L) {
+            removeCachedItem(chatId)
+        } else {
+            updateCachedItem(chatId) { item ->
+                item.copy(order = position.order, isPinned = position.isPinned)
+            }
+        }
+    }
+
+    private fun applyCachedLastMessage(
+        chatId: Long,
+        lastMessage: TdApi.Message?,
+        positions: Array<TdApi.ChatPosition>
+    ): Boolean {
+        val mainPosition = positions.firstOrNull { it.list is TdApi.ChatListMain }
+        return updateCachedItem(chatId) { item ->
+            item.copy(
+                lastMessage = lastMessage.toPreview(),
+                time = lastMessage?.date?.toMessageTime().orEmpty(),
+                order = mainPosition?.order ?: item.order,
+                isPinned = mainPosition?.isPinned ?: item.isPinned
+            )
+        }
+    }
+
+    private fun updateCachedItem(chatId: Long, block: (ChatListItem) -> ChatListItem): Boolean {
+        val index = lastPublishedItems.indexOfFirst { it.id == chatId }
+        if (index == -1) return false
+
+        val items = lastPublishedItems.toMutableList()
+        items[index] = block(items[index])
+        updatePublishedItems(items.sortedForChatList(), persist = true)
+        return true
+    }
+
+    private fun removeCachedItem(chatId: Long): Boolean {
+        val items = lastPublishedItems.filterNot { it.id == chatId }
+        if (items.size == lastPublishedItems.size) return false
+
+        updatePublishedItems(items, persist = true)
+        roomStore?.deleteAsync(chatId)
+        return true
+    }
+
+    private fun updatePublishedItems(items: List<ChatListItem>, persist: Boolean) {
+        if (items == lastPublishedItems) return
+
+        lastPublishedItems = items
+        if (persist) {
+            roomStore?.saveAsync(items)
+        }
+
+        publishSnapshot()
+    }
+
+    private fun hasPublishedItem(chatId: Long): Boolean {
+        return lastPublishedItems.any { it.id == chatId }
+    }
+
+    private fun List<ChatListItem>.sortedForChatList(): List<ChatListItem> {
+        return sortedWith(
+            compareByDescending<ChatListItem> { it.isPinned }
+                .thenByDescending { it.order }
+                .thenByDescending { it.id }
+        )
+    }
+
+    private fun mergeWithCachedItems(tdItems: List<ChatListItem>): List<ChatListItem> {
+        if (lastPublishedItems.isEmpty()) return tdItems
+
+        val knownChatIds = TdEntityCache.chatList().mapTo(HashSet()) { it.id }
+        if (knownChatIds.isEmpty()) return if (tdItems.isEmpty()) lastPublishedItems else tdItems
+
+        val stillUnknownCachedItems = lastPublishedItems.filterNot { it.id in knownChatIds }
+        return mergeItems(stillUnknownCachedItems, tdItems)
+    }
+
+    private fun mergeItems(
+        baseItems: List<ChatListItem>,
+        overrideItems: List<ChatListItem>
+    ): List<ChatListItem> {
+        val merged = LinkedHashMap<Long, ChatListItem>(baseItems.size + overrideItems.size)
+        baseItems.forEach { item -> merged[item.id] = item }
+        overrideItems.forEach { item -> merged[item.id] = item }
+        return merged.values.toList().sortedForChatList()
     }
 
     private fun updatePositions(

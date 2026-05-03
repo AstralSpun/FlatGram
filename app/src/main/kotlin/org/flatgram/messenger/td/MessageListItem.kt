@@ -5,6 +5,8 @@ data class MessageListItem(
     val chatId: Long,
     val senderId: String,
     val senderName: String,
+    val avatarFileId: Int?,
+    val avatarPath: String?,
     val text: String,
     val date: Int,
     val time: String,

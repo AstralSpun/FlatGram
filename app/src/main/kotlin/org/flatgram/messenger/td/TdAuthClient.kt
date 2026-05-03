@@ -100,7 +100,6 @@ object TdAuthClient {
     }
 
     private fun handleUpdate(update: TdApi.Object) {
-        Log.d("TdAuthClient", "update: ${update.javaClass.simpleName}")
         if (update is TdApi.UpdateAuthorizationState) {
             handleAuthorizationState(update.authorizationState)
         }

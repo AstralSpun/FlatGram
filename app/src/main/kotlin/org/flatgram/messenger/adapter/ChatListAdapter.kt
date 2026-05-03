@@ -6,6 +6,7 @@ import androidx.core.view.isVisible
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
+import org.flatgram.messenger.R
 import org.flatgram.messenger.databinding.ItemChatBinding
 import org.flatgram.messenger.td.ChatListItem
 
@@ -32,7 +33,12 @@ class ChatListAdapter(
     ) : RecyclerView.ViewHolder(binding.root) {
 
         fun bind(item: ChatListItem) {
-            binding.avatarText.text = item.title.firstOrNull()?.uppercaseChar()?.toString().orEmpty()
+            AvatarBinder.bind(
+                view = binding.avatarText,
+                title = item.title,
+                avatarPath = item.avatarPath,
+                placeholderBackground = R.drawable.bg_chat_avatar
+            )
             binding.titleText.text = item.title
             binding.messageText.text = item.lastMessage
             binding.timeText.text = item.time

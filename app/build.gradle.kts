@@ -11,6 +11,7 @@ val apiHash: String = localProperties.getProperty("TELEGRAM_API_HASH")?: "\"Unkn
 
 plugins {
     alias(libs.plugins.android.application)
+    alias(libs.plugins.ksp)
 }
 
 android {
@@ -58,4 +59,6 @@ dependencies {
     implementation(libs.material)
 
     implementation(libs.td.lib)
+    implementation(libs.androidx.room.runtime)
+    ksp(libs.androidx.room.compiler)
 }
