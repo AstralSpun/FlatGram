@@ -155,6 +155,17 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
         }
     }
 
+    fun requestAvatar(chatId: Long, senderKey: String, avatarFileId: Int?) {
+        TdEntityCache.requestAvatarForSenderKey(senderKey, avatarFileId) {
+            affectedChatIdsBySender(senderKey)
+                .ifEmpty { setOf(chatId) }
+                .forEach { affectedChatId ->
+                    persistMessages(affectedChatId)
+                    publish(affectedChatId)
+                }
+        }
+    }
+
     fun loadInitial(chatId: Long) {
         endReached.remove(chatId)
         val loading = loadingInitial.getOrPut(chatId) { AtomicBoolean(false) }
@@ -243,13 +254,7 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
 
             is TdApi.UpdateFile -> {
                 TdEntityCache.putFile(update.file)
-                val affectedSenderKeys = TdEntityCache.senderKeysUsingAvatarFile(update.file.id)
-                messageCache.chatIds().forEach { chatId ->
-                    if (messageCache.messages(chatId).any { TdEntityCache.senderKey(it.senderId) in affectedSenderKeys }) {
-                        persistMessages(chatId)
-                        publish(chatId)
-                    }
-                }
+                publishAffectedConversationsByAvatarFile(update.file.id)
             }
 
             is TdApi.UpdateMessageContent -> {
@@ -317,7 +322,7 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
                     if (isOlderPage && !result.messages.hasOlderProgress(fromMessageId)) {
                         endReached.add(chatId)
                     }
-                    putMessages(result.messages, shouldRequestSenders = !isOlderPage)
+                    putMessages(result.messages)
                     persistTdMessages(result.messages)
                     publish(chatId)
                     ensureInitialOlderBuffer(chatId)
@@ -457,10 +462,10 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
         }
     }
 
-    private fun putMessages(messages: Array<TdApi.Message>, shouldRequestSenders: Boolean) {
+    private fun putMessages(messages: Array<TdApi.Message>) {
         messages.forEach { message ->
             val changed = messageCache.put(message)
-            if (changed && shouldRequestSenders) {
+            if (changed) {
                 requestSender(message)
             }
         }
@@ -587,8 +592,31 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
 
     private fun publishAffectedConversationsBySender(sender: TdApi.MessageSender) {
         val senderKey = TdEntityCache.senderKey(sender)
+        affectedChatIdsBySender(senderKey).forEach { chatId ->
+            persistMessages(chatId)
+            publish(chatId)
+        }
+    }
+
+    private fun affectedChatIdsBySender(senderKey: String): Set<Long> {
+        val chatIds = HashSet<Long>()
         messageCache.chatIds().forEach { chatId ->
             if (messageCache.messages(chatId).any { TdEntityCache.senderKey(it.senderId) == senderKey }) {
+                chatIds.add(chatId)
+            }
+        }
+        storedItemsByChat.forEach { (chatId, storedItems) ->
+            if (storedItems.values.any { it.senderId == senderKey }) {
+                chatIds.add(chatId)
+            }
+        }
+        return chatIds
+    }
+
+    private fun publishAffectedConversationsByAvatarFile(fileId: Int) {
+        val affectedSenderKeys = TdEntityCache.senderKeysUsingAvatarFile(fileId)
+        affectedSenderKeys.forEach { senderKey ->
+            affectedChatIdsBySender(senderKey).forEach { chatId ->
                 persistMessages(chatId)
                 publish(chatId)
             }

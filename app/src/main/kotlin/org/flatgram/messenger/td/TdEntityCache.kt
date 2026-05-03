@@ -126,6 +126,48 @@ object TdEntityCache : TdAuthClient.UpdateListener {
         requestFile(file, onLoaded)
     }
 
+    fun requestAvatarForSenderKey(senderKey: String, avatarFileId: Int?, onLoaded: () -> Unit) {
+        val file = avatarFileForSenderKey(senderKey)
+            ?: avatarFileId?.let { filesById[it] ?: TdApi.File().apply { id = it } }
+
+        if (file != null) {
+            requestFile(file, onLoaded)
+            return
+        }
+
+        when {
+            senderKey.startsWith("user:") -> {
+                val userId = senderKey.removePrefix("user:").toLongOrNull() ?: return
+                requestUser(userId) {
+                    requestAvatarForSenderKey(senderKey, avatarFileId, onLoaded)
+                }
+            }
+
+            senderKey.startsWith("chat:") -> {
+                val chatId = senderKey.removePrefix("chat:").toLongOrNull() ?: return
+                requestChat(chatId) {
+                    requestAvatarForSenderKey(senderKey, avatarFileId, onLoaded)
+                }
+            }
+        }
+    }
+
+    private fun avatarFileForSenderKey(senderKey: String): TdApi.File? {
+        return when {
+            senderKey.startsWith("user:") -> {
+                val userId = senderKey.removePrefix("user:").toLongOrNull()
+                userId?.let { usersById[it]?.profilePhoto?.small }
+            }
+
+            senderKey.startsWith("chat:") -> {
+                val chatId = senderKey.removePrefix("chat:").toLongOrNull()
+                chatId?.let { chatsById[it]?.photo?.small }
+            }
+
+            else -> null
+        }
+    }
+
     fun chatIdsUsingAvatarFile(fileId: Int): Set<Long> {
         return chatsById.values
             .asSequence()

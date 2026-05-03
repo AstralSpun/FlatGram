@@ -75,7 +75,11 @@ class ChatActivity : AppCompatActivity() {
         binding.toolbar.title = chatTitle.ifBlank { "Chat" }
         binding.toolbar.setNavigationOnClickListener { finish() }
 
-        adapter = MessageAdapter()
+        adapter = MessageAdapter(
+            onAvatarVisible = { message ->
+                TdMessageRepository.requestAvatar(message.chatId, message.senderId, message.avatarFileId)
+            }
+        )
         layoutManager = LinearLayoutManager(this, RecyclerView.VERTICAL, true)
 
         binding.messageRecycler.layoutManager = layoutManager

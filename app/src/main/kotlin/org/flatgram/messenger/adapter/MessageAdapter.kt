@@ -15,11 +15,19 @@ import org.flatgram.messenger.td.MessageBubbleGroupPosition
 import org.flatgram.messenger.td.MessageListItem
 import org.flatgram.messenger.td.MessageSendStatus
 
-class MessageAdapter : ListAdapter<MessageListItem, MessageAdapter.MessageViewHolder>(DiffCallback) {
+class MessageAdapter(
+    private val onAvatarVisible: (MessageListItem) -> Unit
+) : ListAdapter<MessageListItem, MessageAdapter.MessageViewHolder>(DiffCallback) {
+
+    private val requestedAvatarKeys = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): MessageViewHolder {
         val inflater = LayoutInflater.from(parent.context)
-        return MessageViewHolder(ItemMessageTextBinding.inflate(inflater, parent, false))
+        return MessageViewHolder(
+            ItemMessageTextBinding.inflate(inflater, parent, false),
+            requestedAvatarKeys,
+            onAvatarVisible
+        )
     }
 
     override fun onBindViewHolder(holder: MessageViewHolder, position: Int) {
@@ -27,7 +35,9 @@ class MessageAdapter : ListAdapter<MessageListItem, MessageAdapter.MessageViewHo
     }
 
     class MessageViewHolder(
-        private val binding: ItemMessageTextBinding
+        private val binding: ItemMessageTextBinding,
+        private val requestedAvatarKeys: MutableSet<String>,
+        private val onAvatarVisible: (MessageListItem) -> Unit
     ) : RecyclerView.ViewHolder(binding.root) {
 
         fun bind(item: MessageListItem) {
@@ -35,6 +45,10 @@ class MessageAdapter : ListAdapter<MessageListItem, MessageAdapter.MessageViewHo
             bindBubblePosition(item)
             binding.messageAvatar.visibility = if (item.showAvatar) View.VISIBLE else View.INVISIBLE
             if (item.showAvatar) {
+                val avatarKey = "${item.senderId}:${item.avatarFileId ?: 0}"
+                if (item.avatarPath.isNullOrBlank() && requestedAvatarKeys.add(avatarKey)) {
+                    onAvatarVisible(item)
+                }
                 AvatarBinder.bind(
                     view = binding.messageAvatar,
                     title = item.senderName.ifBlank { "#" },
