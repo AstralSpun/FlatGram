@@ -24,6 +24,7 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
 
     private const val TAG = "TdMessageRepository"
     private const val PAGE_SIZE = 50
+    private const val MIN_BUFFERED_MESSAGES_PER_CHAT = 300
     private const val MAX_CACHED_MESSAGES_PER_CHAT = 500
     private const val COMMON_MERGE_TIME_SECONDS = 900
 
@@ -250,9 +251,13 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
                         publish(chatId)
                         return@send
                     }
+                    if (isOlderPage && !result.messages.hasOlderProgress(fromMessageId)) {
+                        endReached.add(chatId)
+                    }
                     putMessages(result.messages, shouldRequestSenders = !isOlderPage)
                     persistTdMessages(result.messages)
                     publish(chatId)
+                    ensureInitialOlderBuffer(chatId)
                 }
 
                 is TdApi.Error -> {
@@ -289,10 +294,17 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
                 putStoredItems(chatId, storedItems)
                 loadingOlder[chatId]?.set(false)
                 publish(chatId)
+                ensureInitialOlderBuffer(chatId)
                 return@loadOlderAsync
             }
             loadHistory(chatId = chatId, fromMessageId = oldestMessageId, isOlderPage = true)
         } ?: loadHistory(chatId = chatId, fromMessageId = oldestMessageId, isOlderPage = true)
+    }
+
+    private fun ensureInitialOlderBuffer(chatId: Long) {
+        if (endReached.contains(chatId)) return
+        if (messageCount(chatId) >= MIN_BUFFERED_MESSAGES_PER_CHAT) return
+        loadOlder(chatId)
     }
 
     private fun persistMessages(chatId: Long) {
@@ -339,6 +351,13 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
         messageIds.forEach(storedItems::remove)
     }
 
+    private fun messageCount(chatId: Long): Int {
+        val ids = HashSet<Long>()
+        messageCache.messages(chatId).forEach { ids.add(it.id) }
+        storedItemsByChat[chatId]?.keys?.let(ids::addAll)
+        return ids.size
+    }
+
     private fun oldestMessageId(chatId: Long): Long {
         return minOfPositive(
             messageCache.oldestMessageId(chatId),
@@ -380,6 +399,11 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
         }
     }
 
+    private fun Array<TdApi.Message>.hasOlderProgress(fromMessageId: Long): Boolean {
+        if (fromMessageId <= 0L) return true
+        return any { it.id in 1 until fromMessageId }
+    }
+
     private fun updateMessage(
         chatId: Long,
         messageId: Long,
@@ -415,7 +439,7 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
             .map { it.toListItem() }
 
         val storedItems = storedItemsByChat[chatId]?.values.orEmpty()
-        if (storedItems.isEmpty()) return tdItems.withBubbleGroups()
+        if (storedItems.isEmpty()) return tdItems.withBubbleGroups().asNewestFirst()
 
         val mergedItems = LinkedHashMap<Long, MessageListItem>(storedItems.size + tdItems.size)
         storedItems.forEach { item -> mergedItems[item.id] = item }
@@ -423,6 +447,7 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
         return mergedItems.values
             .sortedWith(compareBy<MessageListItem> { it.sortTimestamp() }.thenBy { it.id })
             .withBubbleGroups()
+            .asNewestFirst()
     }
 
     private fun MessageListItem.sortTimestamp(): Int {
@@ -470,6 +495,10 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
                 showAvatar = !item.isOutgoing && !joinsNext
             )
         }
+    }
+
+    private fun List<MessageListItem>.asNewestFirst(): List<MessageListItem> {
+        return asReversed()
     }
 
     private fun canMerge(first: MessageListItem?, second: MessageListItem?): Boolean {
