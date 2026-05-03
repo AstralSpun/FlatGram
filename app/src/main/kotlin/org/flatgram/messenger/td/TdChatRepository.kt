@@ -35,13 +35,18 @@ object TdChatRepository : TdAuthClient.UpdateListener {
 
     private var roomStore: RoomChatListStore? = null
     @Volatile
+    private var isAuthorized = false
+    @Volatile
     private var lastPublishedItems: List<ChatListItem> = emptyList()
     @Volatile
     private var initialCacheLoaded = false
     @Volatile
     private var publishedToListeners = false
 
-    fun start(context: Context) {
+    fun start(context: Context, authorized: Boolean = false) {
+        if (authorized) {
+            isAuthorized = true
+        }
         TdAuthClient.init(context)
         TdEntityCache.start()
         if (roomStore == null) {
@@ -82,6 +87,7 @@ object TdChatRepository : TdAuthClient.UpdateListener {
     }
 
     fun refreshChats() {
+        if (!isAuthorized) return
         if (!refreshInFlight.compareAndSet(false, true)) return
 
         TdAuthClient.send(TdApi.GetChats(TdApi.ChatListMain(), MAIN_LIST_INITIAL_LIMIT)) { result ->
@@ -167,7 +173,8 @@ object TdChatRepository : TdAuthClient.UpdateListener {
             }
 
             is TdApi.UpdateAuthorizationState -> {
-                if (update.authorizationState is TdApi.AuthorizationStateReady) {
+                isAuthorized = update.authorizationState is TdApi.AuthorizationStateReady
+                if (isAuthorized) {
                     refreshChats()
                 }
             }

@@ -209,7 +209,10 @@ class LoginActivity : AppCompatActivity() {
     private fun openChatList() {
         if (openedChatList) return
         openedChatList = true
-        startActivity(Intent(this, ChatListActivity::class.java))
+        startActivity(
+            Intent(this, ChatListActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        )
         finish()
     }
 }

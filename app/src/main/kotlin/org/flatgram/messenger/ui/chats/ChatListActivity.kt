@@ -1,20 +1,42 @@
 package org.flatgram.messenger.ui.chats
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.isVisible
 import androidx.recyclerview.widget.LinearLayoutManager
+import org.drinkless.tdlib.TdApi
 import org.flatgram.messenger.adapter.ChatListAdapter
 import org.flatgram.messenger.databinding.ActivityChatListBinding
 import org.flatgram.messenger.td.ChatListItem
+import org.flatgram.messenger.td.TdAuthClient
 import org.flatgram.messenger.td.TdChatRepository
 import org.flatgram.messenger.ui.chat.ChatActivity
+import org.flatgram.messenger.ui.login.LoginActivity
 
 class ChatListActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityChatListBinding
     private lateinit var adapter: ChatListAdapter
+    private var chatsStarted = false
+    private var openingLogin = false
+
+    private val authListener = object : TdAuthClient.Listener {
+        override fun onAuthorizationState(state: TdApi.AuthorizationState) {
+            when (ChatListAuthRouter.routeFor(state)) {
+                ChatListAuthRoute.ShowChats -> startChats()
+                ChatListAuthRoute.OpenLogin -> openLogin()
+                ChatListAuthRoute.Wait -> showLoading()
+            }
+        }
+
+        override fun onTdError(error: TdApi.Error) {
+            binding.progress.isVisible = false
+            binding.emptyText.isVisible = true
+            binding.emptyText.text = "${error.code}: ${error.message}"
+        }
+    }
 
     private val chatListener = object : TdChatRepository.Listener {
         override fun onChatsChanged(chats: List<ChatListItem>) {
@@ -45,12 +67,45 @@ class ChatListActivity : AppCompatActivity() {
         binding.chatRecycler.layoutManager = LinearLayoutManager(this)
         binding.chatRecycler.adapter = adapter
 
-        TdChatRepository.start(applicationContext)
+        showLoading()
+        TdAuthClient.init(applicationContext)
+    }
+
+    override fun onStart() {
+        super.onStart()
+        openingLogin = false
         TdChatRepository.addListener(chatListener)
+        TdAuthClient.addListener(authListener)
+    }
+
+    override fun onStop() {
+        TdAuthClient.removeListener(authListener)
+        TdChatRepository.removeListener(chatListener)
+        super.onStop()
     }
 
     override fun onDestroy() {
-        TdChatRepository.removeListener(chatListener)
         super.onDestroy()
+    }
+
+    private fun startChats() {
+        if (chatsStarted) return
+        chatsStarted = true
+        openingLogin = false
+        TdChatRepository.start(applicationContext, authorized = true)
+    }
+
+    private fun openLogin() {
+        if (openingLogin) return
+        openingLogin = true
+        startActivity(Intent(this, LoginActivity::class.java))
+        finish()
+    }
+
+    private fun showLoading() {
+        if (adapter.itemCount > 0) return
+        binding.progress.isVisible = true
+        binding.emptyText.isVisible = true
+        binding.emptyText.text = "Loading chats"
     }
 }
