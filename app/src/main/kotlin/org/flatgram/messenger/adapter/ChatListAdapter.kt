@@ -26,6 +26,14 @@ class ChatListAdapter(
         return getItem(position).id
     }
 
+    fun preloadAvatars(limit: Int) {
+        currentList
+            .asSequence()
+            .take(limit)
+            .mapNotNull { it.avatarPath }
+            .forEach(AvatarBinder::preload)
+    }
+
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ChatViewHolder {
         val binding = ItemChatBinding.inflate(
             LayoutInflater.from(parent.context),
@@ -39,6 +47,19 @@ class ChatListAdapter(
         holder.bind(getItem(position))
     }
 
+    override fun onBindViewHolder(
+        holder: ChatViewHolder,
+        position: Int,
+        payloads: MutableList<Any>
+    ) {
+        val payload = payloads.filterIsInstance<ChatPayload>().firstOrNull()
+        if (payload == null) {
+            holder.bind(getItem(position))
+        } else {
+            holder.bind(getItem(position), payload)
+        }
+    }
+
     class ChatViewHolder(
         private val binding: ItemChatBinding,
         private val requestedAvatarKeys: MutableSet<String>,
@@ -46,23 +67,79 @@ class ChatListAdapter(
         private val onAvatarVisible: (ChatListItem) -> Unit
     ) : RecyclerView.ViewHolder(binding.root) {
 
+        private var boundAvatarPath: String? = null
+        private var boundAvatarTitle: String = ""
+        private var boundTitle: String = ""
+        private var boundLastMessage: String = ""
+        private var boundTime: String = ""
+        private var boundUnreadCount: Int = -1
+        private var boundPinned: Boolean = false
+
         fun bind(item: ChatListItem) {
             val avatarKey = "${item.id}:${item.avatarFileId ?: 0}"
-            if (item.avatarPath.isNullOrBlank() && requestedAvatarKeys.add(avatarKey)) {
+            val avatarChanged = item.avatarPath != boundAvatarPath ||
+                (item.avatarPath.isNullOrBlank() && item.title != boundAvatarTitle)
+            if (avatarChanged && item.avatarPath.isNullOrBlank() && requestedAvatarKeys.add(avatarKey)) {
                 onAvatarVisible(item)
             }
-            AvatarBinder.bind(
-                view = binding.avatarText,
-                title = item.title,
-                avatarPath = item.avatarPath,
-                placeholderBackground = R.drawable.bg_chat_avatar
-            )
-            binding.titleText.text = item.title
-            binding.messageText.text = item.lastMessage
-            binding.timeText.text = item.time
-            binding.pinnedText.isVisible = item.isPinned
-            binding.unreadText.isVisible = item.unreadCount > 0
-            binding.unreadText.text = item.unreadCount.coerceAtMost(999).toString()
+            if (avatarChanged) {
+                AvatarBinder.bind(
+                    view = binding.avatarText,
+                    title = item.title,
+                    avatarPath = item.avatarPath,
+                    placeholderBackground = R.drawable.bg_chat_avatar
+                )
+                boundAvatarPath = item.avatarPath
+                boundAvatarTitle = item.title
+            }
+
+            if (item.title != boundTitle) {
+                boundTitle = item.title
+                binding.titleText.text = item.title
+            }
+            if (item.lastMessage != boundLastMessage) {
+                boundLastMessage = item.lastMessage
+                binding.messageText.text = item.lastMessage
+            }
+            if (item.time != boundTime) {
+                boundTime = item.time
+                binding.timeText.text = item.time
+            }
+            if (item.isPinned != boundPinned) {
+                boundPinned = item.isPinned
+                binding.pinnedText.isVisible = item.isPinned
+            }
+            if (item.unreadCount != boundUnreadCount) {
+                boundUnreadCount = item.unreadCount
+                binding.unreadText.isVisible = item.unreadCount > 0
+                binding.unreadText.text = item.unreadCount.coerceAtMost(999).toString()
+            }
+            binding.root.setOnClickListener { onChatClick(item) }
+        }
+
+        fun bind(item: ChatListItem, payload: ChatPayload) {
+            if (payload.avatarChanged || payload.titleChanged) {
+                bind(item)
+                return
+            }
+
+            if (payload.lastMessageChanged) {
+                boundLastMessage = item.lastMessage
+                binding.messageText.text = item.lastMessage
+            }
+            if (payload.timeChanged) {
+                boundTime = item.time
+                binding.timeText.text = item.time
+            }
+            if (payload.pinnedChanged) {
+                boundPinned = item.isPinned
+                binding.pinnedText.isVisible = item.isPinned
+            }
+            if (payload.unreadChanged) {
+                boundUnreadCount = item.unreadCount
+                binding.unreadText.isVisible = item.unreadCount > 0
+                binding.unreadText.text = item.unreadCount.coerceAtMost(999).toString()
+            }
             binding.root.setOnClickListener { onChatClick(item) }
         }
     }
@@ -75,5 +152,26 @@ class ChatListAdapter(
         override fun areContentsTheSame(oldItem: ChatListItem, newItem: ChatListItem): Boolean {
             return oldItem == newItem
         }
+
+        override fun getChangePayload(oldItem: ChatListItem, newItem: ChatListItem): Any {
+            return ChatPayload(
+                titleChanged = oldItem.title != newItem.title,
+                avatarChanged = oldItem.avatarFileId != newItem.avatarFileId ||
+                    oldItem.avatarPath != newItem.avatarPath,
+                lastMessageChanged = oldItem.lastMessage != newItem.lastMessage,
+                timeChanged = oldItem.time != newItem.time,
+                unreadChanged = oldItem.unreadCount != newItem.unreadCount,
+                pinnedChanged = oldItem.isPinned != newItem.isPinned
+            )
+        }
     }
+
+    data class ChatPayload(
+        val titleChanged: Boolean,
+        val avatarChanged: Boolean,
+        val lastMessageChanged: Boolean,
+        val timeChanged: Boolean,
+        val unreadChanged: Boolean,
+        val pinnedChanged: Boolean
+    )
 }

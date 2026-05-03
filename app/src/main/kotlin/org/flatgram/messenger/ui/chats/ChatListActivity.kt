@@ -6,6 +6,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.isVisible
 import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.SimpleItemAnimator
 import org.drinkless.tdlib.TdApi
 import org.flatgram.messenger.adapter.ChatListAdapter
 import org.flatgram.messenger.databinding.ActivityChatListBinding
@@ -44,7 +45,9 @@ class ChatListActivity : AppCompatActivity() {
         override fun onChatsChanged(chats: List<ChatListItem>) {
             if (chats == lastChats) return
             lastChats = chats
-            adapter.submitList(chats)
+            adapter.submitList(chats) {
+                adapter.preloadAvatars(CHAT_AVATAR_PRELOAD_LIMIT)
+            }
             binding.progress.isVisible = false
             binding.emptyText.isVisible = chats.isEmpty()
             binding.emptyText.text = if (chats.isEmpty()) "No chats" else ""
@@ -75,6 +78,7 @@ class ChatListActivity : AppCompatActivity() {
 
         binding.chatRecycler.layoutManager = LinearLayoutManager(this)
         binding.chatRecycler.adapter = adapter
+        (binding.chatRecycler.itemAnimator as? SimpleItemAnimator)?.supportsChangeAnimations = false
         binding.chatRecycler.setHasFixedSize(true)
         binding.chatRecycler.setItemViewCacheSize(CHAT_ROW_CACHE_SIZE)
 
@@ -122,5 +126,6 @@ class ChatListActivity : AppCompatActivity() {
 
     private companion object {
         const val CHAT_ROW_CACHE_SIZE = 24
+        const val CHAT_AVATAR_PRELOAD_LIMIT = 80
     }
 }

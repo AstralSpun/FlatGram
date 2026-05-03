@@ -19,6 +19,7 @@ internal object AvatarBinder {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val decodeExecutor = Executors.newFixedThreadPool(2)
     private val pendingViewsByPath = ConcurrentHashMap<String, MutableList<WeakReference<TextView>>>()
+    private val pendingDecodesByPath = ConcurrentHashMap.newKeySet<String>()
     private val bitmapCache = object : LruCache<String, Bitmap>(avatarCacheSize()) {
         override fun sizeOf(key: String, value: Bitmap): Int {
             return value.byteCount / 1024
@@ -31,9 +32,8 @@ internal object AvatarBinder {
         avatarPath: String?,
         @DrawableRes placeholderBackground: Int
     ) {
-        view.text = title.firstOrNull()?.uppercaseChar()?.toString().orEmpty()
-
         if (avatarPath.isNullOrBlank()) {
+            view.text = title.firstOrNull()?.uppercaseChar()?.toString().orEmpty()
             if (view.background == null) {
                 view.setBackgroundResource(placeholderBackground)
             }
@@ -49,29 +49,52 @@ internal object AvatarBinder {
             return
         }
 
-        view.setBackgroundResource(placeholderBackground)
+        if (view.tag != avatarPath && view.background == null) {
+            view.text = title.firstOrNull()?.uppercaseChar()?.toString().orEmpty()
+            view.setBackgroundResource(placeholderBackground)
+        }
         view.tag = avatarPath
         val pendingViews = pendingViewsByPath.getOrPut(avatarPath) {
             Collections.synchronizedList(mutableListOf())
         }
         pendingViews.add(WeakReference(view))
-        if (pendingViews.size > 1) return
+        if (!pendingDecodesByPath.add(avatarPath)) return
 
         decodeExecutor.execute {
             val targetSize = max(view.width, view.height).takeIf { it > 0 } ?: DEFAULT_AVATAR_SIZE
             val bitmap = decodeSampledBitmap(avatarPath, targetSize, targetSize)
-            if (bitmap != null) {
-                bitmapCache.put(avatarPath, bitmap)
+            completeDecode(avatarPath, bitmap)
+        }
+    }
+
+    fun preload(avatarPath: String?, targetSize: Int = DEFAULT_AVATAR_SIZE) {
+        if (avatarPath.isNullOrBlank()) return
+        if (bitmapCache.get(avatarPath) != null) return
+        if (!pendingDecodesByPath.add(avatarPath)) return
+
+        decodeExecutor.execute {
+            val bitmap = if (bitmapCache.get(avatarPath) == null) {
+                decodeSampledBitmap(avatarPath, targetSize, targetSize)
+            } else {
+                null
             }
-            val views = pendingViewsByPath.remove(avatarPath).orEmpty()
-            mainHandler.post {
-                if (bitmap == null) return@post
-                views.forEach { viewReference ->
-                    val pendingView = viewReference.get() ?: return@forEach
-                    if (pendingView.tag != avatarPath) return@forEach
-                    pendingView.text = null
-                    pendingView.background = roundedDrawable(pendingView, bitmap)
-                }
+            completeDecode(avatarPath, bitmap)
+        }
+    }
+
+    private fun completeDecode(avatarPath: String, bitmap: Bitmap?) {
+        if (bitmap != null) {
+            bitmapCache.put(avatarPath, bitmap)
+        }
+        val views = pendingViewsByPath.remove(avatarPath).orEmpty()
+        pendingDecodesByPath.remove(avatarPath)
+        mainHandler.post {
+            val cachedBitmap = bitmap ?: bitmapCache.get(avatarPath) ?: return@post
+            views.forEach { viewReference ->
+                val pendingView = viewReference.get() ?: return@forEach
+                if (pendingView.tag != avatarPath) return@forEach
+                pendingView.text = null
+                pendingView.background = roundedDrawable(pendingView, cachedBitmap)
             }
         }
     }
