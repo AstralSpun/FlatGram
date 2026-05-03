@@ -12,6 +12,7 @@ import org.flatgram.messenger.databinding.ActivityChatListBinding
 import org.flatgram.messenger.td.ChatListItem
 import org.flatgram.messenger.td.TdAuthClient
 import org.flatgram.messenger.td.TdChatRepository
+import org.flatgram.messenger.td.TdMessageRepository
 import org.flatgram.messenger.ui.chat.ChatActivity
 import org.flatgram.messenger.ui.login.LoginActivity
 
@@ -76,6 +77,7 @@ class ChatListActivity : AppCompatActivity() {
         binding.chatRecycler.adapter = adapter
 
         TdAuthClient.init(applicationContext)
+        TdMessageRepository.start(applicationContext)
     }
 
     override fun onStart() {

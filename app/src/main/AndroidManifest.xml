@@ -13,10 +13,14 @@
         <activity
             android:name=".ui.chat.ChatActivity"
             android:exported="false"
+            android:configChanges="density|orientation|screenLayout|screenSize|smallestScreenSize"
+            android:hardwareAccelerated="true"
             android:windowSoftInputMode="adjustResize" />
 
         <activity
             android:name=".ui.chats.ChatListActivity"
+            android:configChanges="density|orientation|screenLayout|screenSize|smallestScreenSize"
+            android:hardwareAccelerated="true"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

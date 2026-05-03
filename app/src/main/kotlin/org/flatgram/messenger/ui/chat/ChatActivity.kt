@@ -21,14 +21,8 @@ class ChatActivity : AppCompatActivity() {
     private lateinit var adapter: MessageAdapter
     private lateinit var layoutManager: LinearLayoutManager
 
-    private var chatId: Long = 0L
-    private var lastMessageCount = 0
-    private var userScrollGeneration = 0
-
-    private val messageListener = object : TdMessageRepository.Listener {
-        override fun onMessagesChanged(chatId: Long, messages: List<MessageListItem>) {
-            if (chatId != this@ChatActivity.chatId) return
-
+    private val chatListener = object : TdMessageRepository.ChatListener {
+        override fun onMessagesChanged(messages: List<MessageListItem>) {
             val previousMessageCount = lastMessageCount
             val shouldScrollToBottom = lastMessageCount == 0 || isNearBottom()
             val scrollGeneration = userScrollGeneration
@@ -46,12 +40,11 @@ class ChatActivity : AppCompatActivity() {
                 ) {
                     binding.messageRecycler.scrollToPosition(NEWEST_MESSAGE_POSITION)
                 }
-                TdMessageRepository.markVisibleMessagesRead(chatId)
+                TdMessageRepository.markVisibleMessagesRead(chatId, messages)
             }
         }
 
-        override fun onMessageError(chatId: Long, message: String) {
-            if (chatId != this@ChatActivity.chatId) return
+        override fun onMessageError(message: String) {
             binding.progress.isVisible = false
             Toast.makeText(this@ChatActivity, message, Toast.LENGTH_SHORT).show()
             if (adapter.itemCount == 0) {
@@ -60,6 +53,10 @@ class ChatActivity : AppCompatActivity() {
             }
         }
     }
+
+    private var chatId: Long = 0L
+    private var lastMessageCount = 0
+    private var userScrollGeneration = 0
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -84,6 +81,9 @@ class ChatActivity : AppCompatActivity() {
         binding.messageRecycler.layoutManager = layoutManager
         binding.messageRecycler.adapter = adapter
         binding.messageRecycler.itemAnimator = null
+        binding.progress.isVisible = false
+        binding.emptyText.isVisible = false
+        renderInitialSnapshot()
         binding.messageRecycler.addOnScrollListener(object : RecyclerView.OnScrollListener() {
             override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) {
                 if (newState == RecyclerView.SCROLL_STATE_DRAGGING) {
@@ -108,13 +108,12 @@ class ChatActivity : AppCompatActivity() {
             }
         }
 
-        TdMessageRepository.start(applicationContext)
-        TdMessageRepository.addListener(messageListener)
+        TdMessageRepository.addChatListener(chatId, chatListener)
         TdMessageRepository.openChat(chatId)
     }
 
     override fun onDestroy() {
-        TdMessageRepository.removeListener(messageListener)
+        TdMessageRepository.removeChatListener(chatId, chatListener)
         if (chatId != 0L) {
             TdMessageRepository.closeChat(chatId)
         }
@@ -127,6 +126,16 @@ class ChatActivity : AppCompatActivity() {
 
         binding.messageEdit.text = null
         TdMessageRepository.sendText(chatId, text)
+    }
+
+    private fun renderInitialSnapshot() {
+        val messages = TdMessageRepository.currentMessages(chatId)
+        if (messages.isEmpty()) return
+
+        lastMessageCount = messages.size
+        adapter.submitList(messages)
+        binding.messageRecycler.scrollToPosition(NEWEST_MESSAGE_POSITION)
+        TdMessageRepository.markVisibleMessagesRead(chatId, messages)
     }
 
     private fun canAutoScrollToBottom(previousMessageCount: Int, scrollGeneration: Int): Boolean {

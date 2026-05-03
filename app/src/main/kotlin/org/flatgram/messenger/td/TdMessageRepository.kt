@@ -22,6 +22,11 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
         fun onMessageError(chatId: Long, message: String)
     }
 
+    interface ChatListener {
+        fun onMessagesChanged(messages: List<MessageListItem>)
+        fun onMessageError(message: String)
+    }
+
     private const val TAG = "TdMessageRepository"
     private const val PAGE_SIZE = 50
     private const val MIN_BUFFERED_MESSAGES_PER_CHAT = 300
@@ -30,6 +35,7 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val listeners = CopyOnWriteArraySet<Listener>()
+    private val chatListeners = ConcurrentHashMap<Long, CopyOnWriteArraySet<ChatListener>>()
     private val messageCache = MessageCache(MAX_CACHED_MESSAGES_PER_CHAT)
     private val storedItemsByChat = ConcurrentHashMap<Long, ConcurrentHashMap<Long, MessageListItem>>()
     private val loadingInitial = ConcurrentHashMap<Long, AtomicBoolean>()
@@ -43,6 +49,7 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
     private val started = AtomicBoolean(false)
 
     private var roomStore: RoomMessageStore? = null
+    private val lastPublishedItemsByChat = ConcurrentHashMap<Long, List<MessageListItem>>()
 
     fun start(context: Context) {
         TdAuthClient.init(context)
@@ -71,6 +78,37 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
         listeners.remove(listener)
     }
 
+    fun addChatListener(chatId: Long, listener: ChatListener) {
+        chatListeners.getOrPut(chatId) { CopyOnWriteArraySet() }.add(listener)
+        lastPublishedItemsByChat[chatId]?.let { items ->
+            mainHandler.post {
+                if (chatListeners[chatId]?.contains(listener) == true) {
+                    listener.onMessagesChanged(items)
+                }
+            }
+            return
+        }
+        if (hasChatContent(chatId)) {
+            listExecutor.execute {
+                val items = listItems(chatId)
+                lastPublishedItemsByChat[chatId] = items
+                mainHandler.post {
+                    if (chatListeners[chatId]?.contains(listener) == true) {
+                        listener.onMessagesChanged(items)
+                    }
+                }
+            }
+        }
+    }
+
+    fun removeChatListener(chatId: Long, listener: ChatListener) {
+        chatListeners[chatId]?.remove(listener)
+    }
+
+    fun currentMessages(chatId: Long): List<MessageListItem> {
+        return lastPublishedItemsByChat[chatId].orEmpty()
+    }
+
     fun openChat(chatId: Long) {
         loadStoredLatest(chatId)
     }
@@ -90,6 +128,31 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
 
     fun markVisibleMessagesRead(chatId: Long) {
         markRecentMessagesRead(chatId, messageCache.messages(chatId))
+    }
+
+    fun markVisibleMessagesRead(chatId: Long, visibleMessages: List<MessageListItem>) {
+        val ids = visibleMessages
+            .asSequence()
+            .filter { !it.isOutgoing && it.id > 0L }
+            .sortedByDescending { it.id }
+            .take(20)
+            .map { it.id }
+            .filter { id ->
+                val viewed = viewedMessages.getOrPut(chatId) { ConcurrentHashMap.newKeySet() }
+                viewed.add(id)
+            }
+            .toList()
+
+        if (ids.isEmpty()) return
+
+        TdAuthClient.send(
+            TdApi.ViewMessages(chatId, ids.toLongArray(), null, true),
+            emitErrors = false
+        ) { result ->
+            if (result is TdApi.Error) {
+                Log.d(TAG, "ViewMessages($chatId) failed: ${result.code} ${result.message}")
+            }
+        }
     }
 
     fun loadInitial(chatId: Long) {
@@ -358,6 +421,10 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
         return ids.size
     }
 
+    private fun hasChatContent(chatId: Long): Boolean {
+        return messageCache.messages(chatId).any() || storedItemsByChat[chatId]?.isNotEmpty() == true
+    }
+
     private fun oldestMessageId(chatId: Long): Long {
         return minOfPositive(
             messageCache.oldestMessageId(chatId),
@@ -423,8 +490,10 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
 
         listExecutor.execute {
             val items = listItems(chatId)
+            lastPublishedItemsByChat[chatId] = items
             mainHandler.post {
                 listeners.forEach { it.onMessagesChanged(chatId, items) }
+                chatListeners[chatId]?.forEach { it.onMessagesChanged(items) }
                 pendingPublishes.remove(chatId)
                 if (dirtyPublishes.remove(chatId)) {
                     publish(chatId)
@@ -579,6 +648,7 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
     private fun emitError(chatId: Long, message: String) {
         mainHandler.post {
             listeners.forEach { it.onMessageError(chatId, message) }
+            chatListeners[chatId]?.forEach { it.onMessageError(message) }
         }
     }
 }
