@@ -73,7 +73,6 @@ object TdChatRepository : TdAuthClient.UpdateListener {
         if (started.compareAndSet(false, true)) {
             TdAuthClient.addUpdateListener(this)
         }
-        publishSnapshot()
         refreshChats()
     }
 

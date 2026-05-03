@@ -21,6 +21,7 @@ class ChatListActivity : AppCompatActivity() {
     private lateinit var adapter: ChatListAdapter
     private var chatsStarted = false
     private var openingLogin = false
+    private var lastChats: List<ChatListItem> = emptyList()
 
     private val authListener = object : TdAuthClient.Listener {
         override fun onAuthorizationState(state: TdApi.AuthorizationState) {
@@ -40,6 +41,8 @@ class ChatListActivity : AppCompatActivity() {
 
     private val chatListener = object : TdChatRepository.Listener {
         override fun onChatsChanged(chats: List<ChatListItem>) {
+            if (chats == lastChats) return
+            lastChats = chats
             adapter.submitList(chats)
             binding.progress.isVisible = false
             binding.emptyText.isVisible = chats.isEmpty()
@@ -72,7 +75,6 @@ class ChatListActivity : AppCompatActivity() {
         binding.chatRecycler.layoutManager = LinearLayoutManager(this)
         binding.chatRecycler.adapter = adapter
 
-        showLoading()
         TdAuthClient.init(applicationContext)
     }
 
