@@ -18,6 +18,7 @@ object TdEntityCache : TdAuthClient.UpdateListener {
     private val requestedUsers = ConcurrentHashMap.newKeySet<Long>()
     private val requestedChats = ConcurrentHashMap.newKeySet<Long>()
     private val requestedFiles = ConcurrentHashMap.newKeySet<Int>()
+    private val fileCallbacksById = ConcurrentHashMap<Int, MutableList<() -> Unit>>()
     private val started = AtomicBoolean(false)
 
     fun start() {
@@ -55,6 +56,14 @@ object TdEntityCache : TdAuthClient.UpdateListener {
 
     fun putFile(file: TdApi.File?) {
         if (file == null || file.id == 0) return
+        val existing = filesById[file.id]
+        if (existing != null) {
+            val existingLocal = existing.local
+            val incomingLocal = file.local
+            if (existingLocal?.isDownloadingCompleted == true && incomingLocal?.isDownloadingCompleted != true) {
+                file.local = existingLocal
+            }
+        }
         filesById[file.id] = file
     }
 
@@ -226,7 +235,15 @@ object TdEntityCache : TdAuthClient.UpdateListener {
         if (file == null || file.id == 0) return
         val currentFile = filesById[file.id] ?: file.also(::putFile)
         val local = currentFile.local
-        if (local?.isDownloadingCompleted == true || local?.isDownloadingActive == true) return
+        if (local?.isDownloadingCompleted == true) {
+            onLoaded()
+            return
+        }
+        val callbacks = fileCallbacks(currentFile.id)
+        synchronized(callbacks) {
+            callbacks.add(onLoaded)
+        }
+        if (local?.isDownloadingActive == true) return
         if (!requestedFiles.add(currentFile.id)) return
 
         TdAuthClient.send(
@@ -236,12 +253,26 @@ object TdEntityCache : TdAuthClient.UpdateListener {
             when (result) {
                 is TdApi.File -> {
                     putFile(result)
-                    onLoaded()
+                    drainFileCallbacks(result.id)
                 }
 
-                is TdApi.Error -> requestedFiles.remove(currentFile.id)
+                is TdApi.Error -> {
+                    requestedFiles.remove(currentFile.id)
+                    fileCallbacksById.remove(currentFile.id)
+                }
             }
         }
+    }
+
+    private fun fileCallbacks(fileId: Int): MutableList<() -> Unit> {
+        val callbacks = mutableListOf<() -> Unit>()
+        return fileCallbacksById.putIfAbsent(fileId, callbacks) ?: callbacks
+    }
+
+    private fun drainFileCallbacks(fileId: Int) {
+        requestedFiles.remove(fileId)
+        val callbacks = fileCallbacksById.remove(fileId).orEmpty()
+        callbacks.forEach { callback -> callback() }
     }
 
     private fun avatarForFile(file: TdApi.File?): AvatarInfo {

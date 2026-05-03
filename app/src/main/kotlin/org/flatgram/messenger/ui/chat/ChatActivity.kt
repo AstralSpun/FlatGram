@@ -28,7 +28,7 @@ class ChatActivity : AppCompatActivity() {
             val scrollGeneration = userScrollGeneration
             lastMessageCount = messages.size
 
-            adapter.submitList(messages) {
+            submitMessages(messages) {
                 binding.progress.isVisible = false
                 binding.emptyText.isVisible = messages.isEmpty()
                 binding.emptyText.text = if (messages.isEmpty()) "No messages" else ""
@@ -40,7 +40,7 @@ class ChatActivity : AppCompatActivity() {
                 ) {
                     binding.messageRecycler.scrollToPosition(NEWEST_MESSAGE_POSITION)
                 }
-                TdMessageRepository.markVisibleMessagesRead(chatId, messages)
+                markVisibleMessagesRead(messages)
             }
         }
 
@@ -56,6 +56,7 @@ class ChatActivity : AppCompatActivity() {
 
     private var chatId: Long = 0L
     private var lastMessageCount = 0
+    private var lastSubmittedMessages: List<MessageListItem> = emptyList()
     private var userScrollGeneration = 0
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -85,6 +86,7 @@ class ChatActivity : AppCompatActivity() {
         binding.messageRecycler.layoutManager = layoutManager
         binding.messageRecycler.adapter = adapter
         binding.messageRecycler.itemAnimator = null
+        binding.messageRecycler.setItemViewCacheSize(MESSAGE_ROW_CACHE_SIZE)
         binding.progress.isVisible = false
         binding.emptyText.isVisible = false
         renderInitialSnapshot()
@@ -137,9 +139,22 @@ class ChatActivity : AppCompatActivity() {
         if (messages.isEmpty()) return
 
         lastMessageCount = messages.size
-        adapter.submitList(messages)
+        submitMessages(messages)
         binding.messageRecycler.scrollToPosition(NEWEST_MESSAGE_POSITION)
-        TdMessageRepository.markVisibleMessagesRead(chatId, messages)
+        markVisibleMessagesRead(messages)
+    }
+
+    private fun submitMessages(
+        messages: List<MessageListItem>,
+        commitCallback: () -> Unit = {}
+    ) {
+        if (messages == lastSubmittedMessages) {
+            commitCallback()
+            return
+        }
+
+        lastSubmittedMessages = messages
+        adapter.submitList(messages, commitCallback)
     }
 
     private fun canAutoScrollToBottom(previousMessageCount: Int, scrollGeneration: Int): Boolean {
@@ -161,12 +176,30 @@ class ChatActivity : AppCompatActivity() {
         return lastVisible >= prefetchStart
     }
 
+    private fun markVisibleMessagesRead(messages: List<MessageListItem>) {
+        if (messages.isEmpty()) return
+
+        val firstVisible = layoutManager.findFirstVisibleItemPosition()
+        val lastVisible = layoutManager.findLastVisibleItemPosition()
+        if (firstVisible == RecyclerView.NO_POSITION || lastVisible == RecyclerView.NO_POSITION) {
+            TdMessageRepository.markVisibleMessagesRead(chatId, messages)
+            return
+        }
+
+        val fromIndex = minOf(firstVisible, lastVisible).coerceAtLeast(0)
+        val toIndex = maxOf(firstVisible, lastVisible).coerceAtMost(messages.lastIndex)
+        if (fromIndex > toIndex) return
+
+        TdMessageRepository.markVisibleMessagesRead(chatId, messages.subList(fromIndex, toIndex + 1))
+    }
+
     companion object {
         private const val EXTRA_CHAT_ID = "chat_id"
         private const val EXTRA_CHAT_TITLE = "chat_title"
         private const val NEWEST_MESSAGE_POSITION = 0
         private const val NEWEST_MESSAGE_THRESHOLD = 3
         private const val OLDER_MESSAGES_PREFETCH_DISTANCE = 250
+        private const val MESSAGE_ROW_CACHE_SIZE = 32
 
         fun createIntent(context: Context, chatId: Long, chatTitle: String): Intent {
             return Intent(context, ChatActivity::class.java)

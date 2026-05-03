@@ -18,6 +18,14 @@ class ChatListAdapter(
 
     private val requestedAvatarKeys = ConcurrentHashMap.newKeySet<String>()
 
+    init {
+        setHasStableIds(true)
+    }
+
+    override fun getItemId(position: Int): Long {
+        return getItem(position).id
+    }
+
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ChatViewHolder {
         val binding = ItemChatBinding.inflate(
             LayoutInflater.from(parent.context),

@@ -45,6 +45,7 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
     private val storedOldestMessageIds = ConcurrentHashMap<Long, Long>()
     private val pendingPublishes = ConcurrentHashMap.newKeySet<Long>()
     private val dirtyPublishes = ConcurrentHashMap.newKeySet<Long>()
+    private val pendingPersistence = ConcurrentHashMap.newKeySet<Long>()
     private val listExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private val started = AtomicBoolean(false)
 
@@ -160,7 +161,7 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
             affectedChatIdsBySender(senderKey)
                 .ifEmpty { setOf(chatId) }
                 .forEach { affectedChatId ->
-                    persistMessages(affectedChatId)
+                    markForPersistence(affectedChatId)
                     publish(affectedChatId)
                 }
         }
@@ -207,7 +208,7 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
             when (result) {
                 is TdApi.Message -> {
                     putMessage(result)
-                    persistMessages(chatId)
+                    markForPersistence(chatId)
                     publish(chatId)
                 }
 
@@ -220,7 +221,7 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
         when (update) {
             is TdApi.UpdateNewMessage -> {
                 putMessage(update.message)
-                persistMessages(update.message.chatId)
+                markForPersistence(update.message.chatId)
                 publish(update.message.chatId)
             }
 
@@ -265,7 +266,7 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
                     item.copy(text = MessageContentFormatter.format(update.newContent))
                 }
                 if (updatedStoredMessage && !updatedTdMessage) {
-                    persistMessages(update.chatId)
+                    markForPersistence(update.chatId)
                     publish(update.chatId)
                 }
             }
@@ -275,7 +276,7 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
                 putMessage(update.message)
                 removeStoredItem(update.message.chatId, update.oldMessageId)
                 roomStore?.deleteAsync(update.message.chatId, update.oldMessageId)
-                persistMessages(update.message.chatId)
+                markForPersistence(update.message.chatId)
                 publish(update.message.chatId)
             }
 
@@ -284,7 +285,7 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
                 putMessage(update.message)
                 removeStoredItem(update.message.chatId, update.oldMessageId)
                 roomStore?.deleteAsync(update.message.chatId, update.oldMessageId)
-                persistMessages(update.message.chatId)
+                markForPersistence(update.message.chatId)
                 publish(update.message.chatId)
             }
 
@@ -375,14 +376,6 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
         loadOlder(chatId)
     }
 
-    private fun persistMessages(chatId: Long) {
-        val items = listItems(chatId)
-        if (items.isNotEmpty()) {
-            rememberStoredOldest(chatId, items)
-            roomStore?.saveAsync(items)
-        }
-    }
-
     private fun persistTdMessages(messages: Array<TdApi.Message>) {
         if (messages.isEmpty()) return
         val items = messages.map { it.toListItem() }
@@ -455,6 +448,10 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
         storedOldestMessageIds.merge(chatId, oldestMessageId, ::minOf)
     }
 
+    private fun markForPersistence(chatId: Long) {
+        pendingPersistence.add(chatId)
+    }
+
     private fun putMessage(message: TdApi.Message) {
         val changed = messageCache.put(message)
         if (changed) {
@@ -482,7 +479,7 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
         block: (TdApi.Message) -> Unit
     ): Boolean {
         if (!messageCache.update(chatId, messageId, block)) return false
-        persistMessages(chatId)
+        markForPersistence(chatId)
         publish(chatId)
         return true
     }
@@ -495,15 +492,33 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
 
         listExecutor.execute {
             val items = listItems(chatId)
+            val shouldPersist = pendingPersistence.remove(chatId)
+            val previousItems = lastPublishedItemsByChat[chatId]
+            if (items == previousItems) {
+                if (shouldPersist && items.isNotEmpty()) {
+                    rememberStoredOldest(chatId, items)
+                    roomStore?.saveChatAsync(chatId, items)
+                }
+                finishPublish(chatId)
+                return@execute
+            }
             lastPublishedItemsByChat[chatId] = items
+            if (shouldPersist && items.isNotEmpty()) {
+                rememberStoredOldest(chatId, items)
+                roomStore?.saveChatAsync(chatId, items)
+            }
             mainHandler.post {
                 listeners.forEach { it.onMessagesChanged(chatId, items) }
                 chatListeners[chatId]?.forEach { it.onMessagesChanged(items) }
-                pendingPublishes.remove(chatId)
-                if (dirtyPublishes.remove(chatId)) {
-                    publish(chatId)
-                }
+                finishPublish(chatId)
             }
+        }
+    }
+
+    private fun finishPublish(chatId: Long) {
+        pendingPublishes.remove(chatId)
+        if (dirtyPublishes.remove(chatId)) {
+            publish(chatId)
         }
     }
 
@@ -593,7 +608,7 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
     private fun publishAffectedConversationsBySender(sender: TdApi.MessageSender) {
         val senderKey = TdEntityCache.senderKey(sender)
         affectedChatIdsBySender(senderKey).forEach { chatId ->
-            persistMessages(chatId)
+            markForPersistence(chatId)
             publish(chatId)
         }
     }
@@ -617,7 +632,7 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
         val affectedSenderKeys = TdEntityCache.senderKeysUsingAvatarFile(fileId)
         affectedSenderKeys.forEach { senderKey ->
             affectedChatIdsBySender(senderKey).forEach { chatId ->
-                persistMessages(chatId)
+                markForPersistence(chatId)
                 publish(chatId)
             }
         }
@@ -626,9 +641,6 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
     private fun requestSender(message: TdApi.Message) {
         TdEntityCache.requestSender(message.senderId) {
             publishAffectedConversationsBySender(message.senderId)
-            TdEntityCache.requestAvatarForSender(message.senderId) {
-                publishAffectedConversationsBySender(message.senderId)
-            }
         }
         TdEntityCache.requestAvatarForSender(message.senderId) {
             publishAffectedConversationsBySender(message.senderId)

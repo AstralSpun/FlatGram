@@ -21,6 +21,14 @@ class MessageAdapter(
 
     private val requestedAvatarKeys = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
+    init {
+        setHasStableIds(true)
+    }
+
+    override fun getItemId(position: Int): Long {
+        return getItem(position).id
+    }
+
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): MessageViewHolder {
         val inflater = LayoutInflater.from(parent.context)
         return MessageViewHolder(
@@ -39,6 +47,11 @@ class MessageAdapter(
         private val requestedAvatarKeys: MutableSet<String>,
         private val onAvatarVisible: (MessageListItem) -> Unit
     ) : RecyclerView.ViewHolder(binding.root) {
+
+        private var boundTopGapResId: Int = 0
+        private var boundIsOutgoing: Boolean? = null
+        private var boundBackgroundResId: Int = 0
+        private var boundTextColorAttr: Int = 0
 
         fun bind(item: MessageListItem) {
             bindItemSpacing(item)
@@ -62,7 +75,7 @@ class MessageAdapter(
             binding.messageTime.text = item.time
             binding.messageSendState.text = sendStateText(item)
             binding.messageSendState.isVisible = binding.messageSendState.text.isNotBlank()
-            binding.messageBubble.setBackgroundResource(backgroundFor(item))
+            bindBackground(item)
             bindBubbleTextColor(item)
         }
 
@@ -76,6 +89,8 @@ class MessageAdapter(
                 R.dimen.message_joined_gap
             }
 
+            if (topGap == boundTopGapResId) return
+            boundTopGapResId = topGap
             binding.root.setPadding(
                 binding.root.paddingLeft,
                 itemView.resources.getDimensionPixelSize(topGap),
@@ -85,6 +100,9 @@ class MessageAdapter(
         }
 
         private fun bindBubblePosition(item: MessageListItem) {
+            if (boundIsOutgoing == item.isOutgoing) return
+            boundIsOutgoing = item.isOutgoing
+
             val params = binding.messageBubble.layoutParams as ConstraintLayout.LayoutParams
             if (item.isOutgoing) {
                 params.horizontalBias = 1f
@@ -126,6 +144,14 @@ class MessageAdapter(
             }
         }
 
+        private fun bindBackground(item: MessageListItem) {
+            val backgroundResId = backgroundFor(item)
+            if (backgroundResId == boundBackgroundResId) return
+
+            boundBackgroundResId = backgroundResId
+            binding.messageBubble.setBackgroundResource(backgroundResId)
+        }
+
         private fun sendStateText(item: MessageListItem): String {
             if (!item.isOutgoing) return ""
             return when (item.status) {
@@ -141,6 +167,9 @@ class MessageAdapter(
             } else {
                 com.google.android.material.R.attr.colorOnSurfaceVariant
             }
+            if (textColorAttr == boundTextColorAttr) return
+
+            boundTextColorAttr = textColorAttr
             val textColor = itemView.context.resolveColor(textColorAttr)
             binding.messageText.setTextColor(textColor)
             binding.messageTime.setTextColor(textColor)

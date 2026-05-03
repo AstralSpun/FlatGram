@@ -75,6 +75,8 @@ class ChatListActivity : AppCompatActivity() {
 
         binding.chatRecycler.layoutManager = LinearLayoutManager(this)
         binding.chatRecycler.adapter = adapter
+        binding.chatRecycler.setHasFixedSize(true)
+        binding.chatRecycler.setItemViewCacheSize(CHAT_ROW_CACHE_SIZE)
 
         TdAuthClient.init(applicationContext)
         TdMessageRepository.start(applicationContext)
@@ -116,5 +118,9 @@ class ChatListActivity : AppCompatActivity() {
         binding.progress.isVisible = true
         binding.emptyText.isVisible = true
         binding.emptyText.text = "Loading chats"
+    }
+
+    private companion object {
+        const val CHAT_ROW_CACHE_SIZE = 24
     }
 }

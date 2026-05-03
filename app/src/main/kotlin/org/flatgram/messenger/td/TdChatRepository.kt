@@ -113,7 +113,12 @@ object TdChatRepository : TdAuthClient.UpdateListener {
     }
 
     fun requestAvatar(chatId: Long) {
-        val chat = TdEntityCache.chat(chatId) ?: return
+        val chat = TdEntityCache.chat(chatId)
+        if (chat == null) {
+            fetchChat(chatId)
+            return
+        }
+
         TdEntityCache.requestAvatarForChat(chat) {
             schedulePublish()
         }
@@ -201,7 +206,8 @@ object TdChatRepository : TdAuthClient.UpdateListener {
     ) {
         val updated = TdEntityCache.updateChat(chatId, block)
         if (!updated) {
-            if (!fallback()) {
+            val handledByCachedItem = fallback()
+            if (!handledByCachedItem || !TdEntityCache.hasChat(chatId)) {
                 fetchChat(chatId)
             }
             return
@@ -277,27 +283,25 @@ object TdChatRepository : TdAuthClient.UpdateListener {
 
     private fun buildChatListSnapshot(): List<ChatListItem> {
         val tdItems = TdEntityCache.chatList()
-            .mapNotNull { chat -> chat.toListItem(requestAvatar = false) }
+            .mapNotNull { chat -> chat.toListItem() }
             .sortedForChatList()
             .mapIndexed { index, item ->
-                if (index < AUTO_DOWNLOAD_AVATAR_LIMIT) {
-                    TdEntityCache.chat(item.id)?.toListItem(requestAvatar = true) ?: item
-                } else {
-                    item
+                if (index < AUTO_DOWNLOAD_AVATAR_LIMIT && item.avatarPath.isNullOrBlank()) {
+                    TdEntityCache.chat(item.id)?.let { chat ->
+                        TdEntityCache.requestAvatarForChat(chat) {
+                            schedulePublish()
+                        }
+                    }
                 }
+                item
             }
         return mergeWithCachedItems(tdItems)
     }
 
-    private fun TdApi.Chat.toListItem(requestAvatar: Boolean): ChatListItem? {
+    private fun TdApi.Chat.toListItem(): ChatListItem? {
         val mainPosition = positions.firstOrNull { it.list is TdApi.ChatListMain && it.order != 0L }
             ?: return null
         val avatar = TdEntityCache.chatAvatar(this)
-        if (requestAvatar) {
-            TdEntityCache.requestAvatarForChat(this) {
-                schedulePublish()
-            }
-        }
 
         return ChatListItem(
             id = id,
