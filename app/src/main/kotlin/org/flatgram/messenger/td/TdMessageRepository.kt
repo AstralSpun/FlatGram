@@ -27,16 +27,23 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val listeners = CopyOnWriteArraySet<Listener>()
-    private val messagesByChat = ConcurrentHashMap<Long, ConcurrentHashMap<Long, TdApi.Message>>()
+    private val messageCache = MessageCache(MAX_CACHED_MESSAGES_PER_CHAT)
+    private val storedItemsByChat = ConcurrentHashMap<Long, ConcurrentHashMap<Long, MessageListItem>>()
     private val loadingInitial = ConcurrentHashMap<Long, AtomicBoolean>()
     private val loadingOlder = ConcurrentHashMap<Long, AtomicBoolean>()
     private val endReached = ConcurrentHashMap.newKeySet<Long>()
     private val viewedMessages = ConcurrentHashMap<Long, MutableSet<Long>>()
+    private val storedOldestMessageIds = ConcurrentHashMap<Long, Long>()
     private val started = AtomicBoolean(false)
+
+    private var roomStore: RoomMessageStore? = null
 
     fun start(context: Context) {
         TdAuthClient.init(context)
         TdEntityCache.start()
+        if (roomStore == null) {
+            roomStore = RoomMessageStore(context.applicationContext)
+        }
         if (started.compareAndSet(false, true)) {
             TdAuthClient.addUpdateListener(this)
         }
@@ -44,7 +51,7 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
 
     fun addListener(listener: Listener) {
         listeners.add(listener)
-        messagesByChat.keys.forEach { chatId ->
+        messageCache.chatIds().forEach { chatId ->
             val items = listItems(chatId)
             mainHandler.post {
                 if (listeners.contains(listener)) {
@@ -59,22 +66,24 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
     }
 
     fun openChat(chatId: Long) {
-        publish(chatId)
+        loadStoredLatest(chatId)
+    }
+
+    private fun openTdChat(chatId: Long) {
         TdAuthClient.send(TdApi.OpenChat(chatId), emitErrors = false) { result ->
             if (result is TdApi.Error) {
                 emitError(chatId, result.message)
             }
         }
-        loadInitial(chatId)
     }
 
     fun closeChat(chatId: Long) {
         TdAuthClient.send(TdApi.CloseChat(chatId), emitErrors = false)
-        trimCachedChat(chatId)
+        messageCache.trim(chatId)
     }
 
     fun markVisibleMessagesRead(chatId: Long) {
-        markRecentMessagesRead(chatId, messagesByChat[chatId]?.values.orEmpty())
+        markRecentMessagesRead(chatId, messageCache.messages(chatId))
     }
 
     fun loadInitial(chatId: Long) {
@@ -90,11 +99,7 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
         val loading = loadingOlder.getOrPut(chatId) { AtomicBoolean(false) }
         if (!loading.compareAndSet(false, true)) return
 
-        val oldestMessageId = messagesByChat[chatId]
-            ?.keys
-            ?.filter { it > 0L }
-            ?.minOrNull()
-            ?: 0L
+        val oldestMessageId = oldestMessageId(chatId)
 
         if (oldestMessageId == 0L) {
             loading.set(false)
@@ -102,7 +107,7 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
             return
         }
 
-        loadHistory(chatId = chatId, fromMessageId = oldestMessageId, isOlderPage = true)
+        loadStoredOlderThenRemote(chatId, oldestMessageId)
     }
 
     fun sendText(chatId: Long, text: String) {
@@ -122,6 +127,7 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
             when (result) {
                 is TdApi.Message -> {
                     putMessage(result)
+                    persistMessages(chatId)
                     publish(chatId)
                 }
 
@@ -134,6 +140,7 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
         when (update) {
             is TdApi.UpdateNewMessage -> {
                 putMessage(update.message)
+                persistMessages(update.message.chatId)
                 publish(update.message.chatId)
             }
 
@@ -168,37 +175,50 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
             is TdApi.UpdateFile -> {
                 TdEntityCache.putFile(update.file)
                 val affectedSenderKeys = TdEntityCache.senderKeysUsingAvatarFile(update.file.id)
-                messagesByChat.forEach { (chatId, messages) ->
-                    if (messages.values.any { TdEntityCache.senderKey(it.senderId) in affectedSenderKeys }) {
+                messageCache.chatIds().forEach { chatId ->
+                    if (messageCache.messages(chatId).any { TdEntityCache.senderKey(it.senderId) in affectedSenderKeys }) {
+                        persistMessages(chatId)
                         publish(chatId)
                     }
                 }
             }
 
             is TdApi.UpdateMessageContent -> {
-                updateMessage(update.chatId, update.messageId) { message ->
+                val updatedTdMessage = updateMessage(update.chatId, update.messageId) { message ->
                     message.content = update.newContent
+                }
+                val updatedStoredMessage = updateStoredItem(update.chatId, update.messageId) { item ->
+                    item.copy(text = MessageContentFormatter.format(update.newContent))
+                }
+                if (updatedStoredMessage && !updatedTdMessage) {
+                    persistMessages(update.chatId)
+                    publish(update.chatId)
                 }
             }
 
             is TdApi.UpdateMessageSendSucceeded -> {
-                val cache = messagesByChat.getOrPut(update.message.chatId) { ConcurrentHashMap() }
-                cache.remove(update.oldMessageId)
+                messageCache.replace(update.message.chatId, update.oldMessageId, update.message)
                 putMessage(update.message)
+                removeStoredItem(update.message.chatId, update.oldMessageId)
+                roomStore?.deleteAsync(update.message.chatId, update.oldMessageId)
+                persistMessages(update.message.chatId)
                 publish(update.message.chatId)
             }
 
             is TdApi.UpdateMessageSendFailed -> {
-                val cache = messagesByChat.getOrPut(update.message.chatId) { ConcurrentHashMap() }
-                cache.remove(update.oldMessageId)
+                messageCache.replace(update.message.chatId, update.oldMessageId, update.message)
                 putMessage(update.message)
+                removeStoredItem(update.message.chatId, update.oldMessageId)
+                roomStore?.deleteAsync(update.message.chatId, update.oldMessageId)
+                persistMessages(update.message.chatId)
                 publish(update.message.chatId)
             }
 
             is TdApi.UpdateDeleteMessages -> {
                 if (!update.isPermanent) return
-                val cache = messagesByChat[update.chatId] ?: return
-                update.messageIds.forEach { cache.remove(it) }
+                messageCache.removeAll(update.chatId, update.messageIds)
+                removeStoredItems(update.chatId, update.messageIds)
+                roomStore?.deleteAsync(update.chatId, update.messageIds)
                 publish(update.chatId)
             }
 
@@ -226,6 +246,7 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
                         return@send
                     }
                     result.messages.forEach(::putMessage)
+                    persistMessages(chatId)
                     publish(chatId)
                 }
 
@@ -240,9 +261,90 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
         }
     }
 
+    private fun loadStoredLatest(chatId: Long) {
+        roomStore?.loadLatestAsync(chatId, MAX_CACHED_MESSAGES_PER_CHAT) { storedItems ->
+            if (storedItems.isNotEmpty()) {
+                putStoredItems(chatId, storedItems)
+                publish(chatId)
+            } else {
+                publish(chatId)
+            }
+            openTdChat(chatId)
+            loadInitial(chatId)
+        } ?: run {
+            publish(chatId)
+            openTdChat(chatId)
+            loadInitial(chatId)
+        }
+    }
+
+    private fun loadStoredOlderThenRemote(chatId: Long, oldestMessageId: Long) {
+        roomStore?.loadOlderAsync(chatId, oldestMessageId, PAGE_SIZE) { storedItems ->
+            if (storedItems.isNotEmpty()) {
+                putStoredItems(chatId, storedItems)
+                publish(chatId)
+            }
+            loadHistory(chatId = chatId, fromMessageId = oldestMessageId, isOlderPage = true)
+        } ?: loadHistory(chatId = chatId, fromMessageId = oldestMessageId, isOlderPage = true)
+    }
+
+    private fun persistMessages(chatId: Long) {
+        val items = listItems(chatId)
+        if (items.isNotEmpty()) {
+            rememberStoredOldest(chatId, items)
+            roomStore?.saveAsync(items)
+        }
+    }
+
+    private fun putStoredItems(chatId: Long, items: List<MessageListItem>) {
+        if (items.isEmpty()) return
+        val storedItems = storedItemsByChat.getOrPut(chatId) { ConcurrentHashMap() }
+        items.forEach { item -> storedItems[item.id] = item }
+        rememberStoredOldest(chatId, items)
+    }
+
+    private fun updateStoredItem(
+        chatId: Long,
+        messageId: Long,
+        block: (MessageListItem) -> MessageListItem
+    ): Boolean {
+        val storedItems = storedItemsByChat[chatId] ?: return false
+        val item = storedItems[messageId] ?: return false
+        storedItems[messageId] = block(item)
+        return true
+    }
+
+    private fun removeStoredItem(chatId: Long, messageId: Long) {
+        storedItemsByChat[chatId]?.remove(messageId)
+    }
+
+    private fun removeStoredItems(chatId: Long, messageIds: LongArray) {
+        val storedItems = storedItemsByChat[chatId] ?: return
+        messageIds.forEach(storedItems::remove)
+    }
+
+    private fun oldestMessageId(chatId: Long): Long {
+        return listItems(chatId)
+            .asSequence()
+            .map { it.id }
+            .filter { it > 0L }
+            .minOrNull()
+            ?: storedOldestMessageIds[chatId]
+            ?: 0L
+    }
+
+    private fun rememberStoredOldest(chatId: Long, items: List<MessageListItem>) {
+        val oldestMessageId = items
+            .asSequence()
+            .map { it.id }
+            .filter { it > 0L }
+            .minOrNull()
+            ?: return
+        storedOldestMessageIds.merge(chatId, oldestMessageId, ::minOf)
+    }
+
     private fun putMessage(message: TdApi.Message) {
-        val cache = messagesByChat.getOrPut(message.chatId) { ConcurrentHashMap() }
-        cache[message.id] = message
+        messageCache.put(message)
         requestSender(message)
     }
 
@@ -250,10 +352,11 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
         chatId: Long,
         messageId: Long,
         block: (TdApi.Message) -> Unit
-    ) {
-        val message = messagesByChat[chatId]?.get(messageId) ?: return
-        block(message)
+    ): Boolean {
+        if (!messageCache.update(chatId, messageId, block)) return false
+        persistMessages(chatId)
         publish(chatId)
+        return true
     }
 
     private fun publish(chatId: Long) {
@@ -265,12 +368,27 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
     }
 
     private fun listItems(chatId: Long): List<MessageListItem> {
-        return messagesByChat[chatId]
-            ?.values
-            ?.sortedWith(compareBy<TdApi.Message> { it.sortTimestamp() }.thenBy { it.id })
-            ?.map { it.toListItem() }
-            ?.withBubbleGroups()
-            .orEmpty()
+        val tdItems = messageCache.messages(chatId)
+            .sortedWith(compareBy<TdApi.Message> { it.sortTimestamp() }.thenBy { it.id })
+            .map { it.toListItem() }
+
+        val storedItems = storedItemsByChat[chatId]?.values.orEmpty()
+        if (storedItems.isEmpty()) return tdItems.withBubbleGroups()
+
+        val mergedItems = LinkedHashMap<Long, MessageListItem>(storedItems.size + tdItems.size)
+        storedItems.forEach { item -> mergedItems[item.id] = item }
+        tdItems.forEach { item -> mergedItems[item.id] = item }
+        return mergedItems.values
+            .sortedWith(compareBy<MessageListItem> { it.sortTimestamp() }.thenBy { it.id })
+            .withBubbleGroups()
+    }
+
+    private fun MessageListItem.sortTimestamp(): Int {
+        return if (date == 0 && status == MessageSendStatus.SENDING) {
+            Int.MAX_VALUE
+        } else {
+            date
+        }
     }
 
     private fun TdApi.Message.toListItem(): MessageListItem {
@@ -329,8 +447,9 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
 
     private fun publishAffectedConversationsBySender(sender: TdApi.MessageSender) {
         val senderKey = TdEntityCache.senderKey(sender)
-        messagesByChat.forEach { (chatId, messages) ->
-            if (messages.values.any { TdEntityCache.senderKey(it.senderId) == senderKey }) {
+        messageCache.chatIds().forEach { chatId ->
+            if (messageCache.messages(chatId).any { TdEntityCache.senderKey(it.senderId) == senderKey }) {
+                persistMessages(chatId)
                 publish(chatId)
             }
         }
@@ -346,21 +465,6 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
         TdEntityCache.requestAvatarForSender(message.senderId) {
             publishAffectedConversationsBySender(message.senderId)
         }
-    }
-
-    private fun trimCachedChat(chatId: Long) {
-        val cache = messagesByChat[chatId] ?: return
-        if (cache.size <= MAX_CACHED_MESSAGES_PER_CHAT) return
-
-        val removableIds = cache.values
-            .asSequence()
-            .filter { it.id > 0L }
-            .sortedWith(compareBy<TdApi.Message> { it.sortTimestamp() }.thenBy { it.id })
-            .take(cache.size - MAX_CACHED_MESSAGES_PER_CHAT)
-            .map { it.id }
-            .toList()
-
-        removableIds.forEach(cache::remove)
     }
 
     private fun TdApi.MessageSendingState?.toSendStatus(): MessageSendStatus {
