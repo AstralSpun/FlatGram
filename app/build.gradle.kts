@@ -5,7 +5,7 @@ val localPropertiesFile = rootProject.file("local.properties")
 if (localPropertiesFile.exists()) {
     localProperties.load(localPropertiesFile.inputStream())
 }
-
+val keystorePath: String? = localProperties.getProperty("KEYSTORE_PATH")
 val apiId: String = localProperties.getProperty("TELEGRAM_API_ID")?: "0"
 val apiHash: String = localProperties.getProperty("TELEGRAM_API_HASH")?: "\"Unknown\""
 
@@ -31,13 +31,46 @@ android {
 
         buildConfigField("int", "TELEGRAM_API_ID", apiId)
         buildConfigField("String", "TELEGRAM_API_HASH", apiHash)
+
+        ndk {
+            abiFilters.addAll(
+                setOf("armeabi-v7a", "arm64-v8a")
+            )
+        }
+        signingConfigs {
+            create("release") {
+                if (!keystorePath.isNullOrBlank()) {
+                    storeFile = file(keystorePath)
+                    storePassword = localProperties.getProperty("KEYSTORE_PASSWORD")
+                    keyAlias = localProperties.getProperty("KEY_ALIAS")
+                    keyPassword = localProperties.getProperty("KEY_PASSWORD")
+                    enableV2Signing = true
+                    enableV3Signing = true
+                }
+            }
+
+            getByName("debug") {
+                if (!keystorePath.isNullOrBlank()) {
+                    storeFile = file(keystorePath)
+                    storePassword = localProperties.getProperty("KEYSTORE_PASSWORD")
+                    keyAlias = localProperties.getProperty("KEY_ALIAS")
+                    keyPassword = localProperties.getProperty("KEY_PASSWORD")
+                    enableV2Signing = true
+                    enableV3Signing = true
+                }
+            }
+        }
     }
 
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("debug")
+        }
         release {
             optimization {
                 enable = true
             }
+            signingConfig = signingConfigs.getByName("release")
         }
     }
     compileOptions {
