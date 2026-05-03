@@ -60,9 +60,14 @@ class ChatListActivity : AppCompatActivity() {
         binding = ActivityChatListBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        adapter = ChatListAdapter { chat ->
-            startActivity(ChatActivity.createIntent(this, chat.id, chat.title))
-        }
+        adapter = ChatListAdapter(
+            onChatClick = { chat ->
+                startActivity(ChatActivity.createIntent(this, chat.id, chat.title))
+            },
+            onAvatarVisible = { chat ->
+                TdChatRepository.requestAvatar(chat.id)
+            }
+        )
 
         binding.chatRecycler.layoutManager = LinearLayoutManager(this)
         binding.chatRecycler.adapter = adapter

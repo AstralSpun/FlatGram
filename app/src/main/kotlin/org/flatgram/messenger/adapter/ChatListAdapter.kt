@@ -11,7 +11,8 @@ import org.flatgram.messenger.databinding.ItemChatBinding
 import org.flatgram.messenger.td.ChatListItem
 
 class ChatListAdapter(
-    private val onChatClick: (ChatListItem) -> Unit
+    private val onChatClick: (ChatListItem) -> Unit,
+    private val onAvatarVisible: (ChatListItem) -> Unit
 ) : ListAdapter<ChatListItem, ChatListAdapter.ChatViewHolder>(DiffCallback) {
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ChatViewHolder {
@@ -20,7 +21,7 @@ class ChatListAdapter(
             parent,
             false
         )
-        return ChatViewHolder(binding, onChatClick)
+        return ChatViewHolder(binding, onChatClick, onAvatarVisible)
     }
 
     override fun onBindViewHolder(holder: ChatViewHolder, position: Int) {
@@ -29,10 +30,14 @@ class ChatListAdapter(
 
     class ChatViewHolder(
         private val binding: ItemChatBinding,
-        private val onChatClick: (ChatListItem) -> Unit
+        private val onChatClick: (ChatListItem) -> Unit,
+        private val onAvatarVisible: (ChatListItem) -> Unit
     ) : RecyclerView.ViewHolder(binding.root) {
 
         fun bind(item: ChatListItem) {
+            if (item.avatarPath.isNullOrBlank()) {
+                onAvatarVisible(item)
+            }
             AvatarBinder.bind(
                 view = binding.avatarText,
                 title = item.title,

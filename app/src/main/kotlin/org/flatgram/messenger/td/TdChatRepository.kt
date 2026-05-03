@@ -108,6 +108,13 @@ object TdChatRepository : TdAuthClient.UpdateListener {
         }
     }
 
+    fun requestAvatar(chatId: Long) {
+        val chat = TdEntityCache.chat(chatId) ?: return
+        TdEntityCache.requestAvatarForChat(chat) {
+            schedulePublish()
+        }
+    }
+
     override fun onTdUpdate(update: TdApi.Update) {
         when (update) {
             is TdApi.UpdateNewChat -> {
