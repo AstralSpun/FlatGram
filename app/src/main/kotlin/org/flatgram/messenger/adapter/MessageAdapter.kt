@@ -34,12 +34,14 @@ class MessageAdapter : ListAdapter<MessageListItem, MessageAdapter.MessageViewHo
             bindItemSpacing(item)
             bindBubblePosition(item)
             binding.messageAvatar.visibility = if (item.showAvatar) View.VISIBLE else View.INVISIBLE
-            AvatarBinder.bind(
-                view = binding.messageAvatar,
-                title = item.senderName.ifBlank { "#" },
-                avatarPath = item.avatarPath,
-                placeholderBackground = R.drawable.bg_message_avatar
-            )
+            if (item.showAvatar) {
+                AvatarBinder.bind(
+                    view = binding.messageAvatar,
+                    title = item.senderName.ifBlank { "#" },
+                    avatarPath = item.avatarPath,
+                    placeholderBackground = R.drawable.bg_message_avatar
+                )
+            }
             binding.messageSender.isVisible = shouldShowSender(item)
             binding.messageSender.text = item.senderName
             binding.messageText.text = item.text

@@ -8,6 +8,7 @@ import android.util.LruCache
 import android.widget.TextView
 import androidx.annotation.DrawableRes
 import androidx.core.graphics.drawable.RoundedBitmapDrawableFactory
+import kotlin.math.max
 import java.util.concurrent.Executors
 
 internal object AvatarBinder {
@@ -45,7 +46,8 @@ internal object AvatarBinder {
         view.setBackgroundResource(placeholderBackground)
         view.tag = avatarPath
         decodeExecutor.execute {
-            val bitmap = BitmapFactory.decodeFile(avatarPath) ?: return@execute
+            val targetSize = max(view.width, view.height).takeIf { it > 0 } ?: DEFAULT_AVATAR_SIZE
+            val bitmap = decodeSampledBitmap(avatarPath, targetSize, targetSize) ?: return@execute
             bitmapCache.put(avatarPath, bitmap)
             mainHandler.post {
                 if (view.tag != avatarPath) return@post
@@ -68,4 +70,35 @@ internal object AvatarBinder {
         val maxMemoryKb = (Runtime.getRuntime().maxMemory() / 1024).toInt()
         return maxMemoryKb / 32
     }
+
+    private fun decodeSampledBitmap(path: String, reqWidth: Int, reqHeight: Int): Bitmap? {
+        val bounds = BitmapFactory.Options().apply {
+            inJustDecodeBounds = true
+        }
+        BitmapFactory.decodeFile(path, bounds)
+
+        val options = BitmapFactory.Options().apply {
+            inSampleSize = calculateInSampleSize(bounds, reqWidth, reqHeight)
+        }
+        return BitmapFactory.decodeFile(path, options)
+    }
+
+    private fun calculateInSampleSize(options: BitmapFactory.Options, reqWidth: Int, reqHeight: Int): Int {
+        val height = options.outHeight
+        val width = options.outWidth
+        var inSampleSize = 1
+
+        if (height > reqHeight || width > reqWidth) {
+            var halfHeight = height / 2
+            var halfWidth = width / 2
+
+            while (halfHeight / inSampleSize >= reqHeight && halfWidth / inSampleSize >= reqWidth) {
+                inSampleSize *= 2
+            }
+        }
+
+        return inSampleSize
+    }
+
+    private const val DEFAULT_AVATAR_SIZE = 96
 }

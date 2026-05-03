@@ -9,11 +9,14 @@ import androidx.recyclerview.widget.RecyclerView
 import org.flatgram.messenger.R
 import org.flatgram.messenger.databinding.ItemChatBinding
 import org.flatgram.messenger.td.ChatListItem
+import java.util.concurrent.ConcurrentHashMap
 
 class ChatListAdapter(
     private val onChatClick: (ChatListItem) -> Unit,
     private val onAvatarVisible: (ChatListItem) -> Unit
 ) : ListAdapter<ChatListItem, ChatListAdapter.ChatViewHolder>(DiffCallback) {
+
+    private val requestedAvatarKeys = ConcurrentHashMap.newKeySet<String>()
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ChatViewHolder {
         val binding = ItemChatBinding.inflate(
@@ -21,7 +24,7 @@ class ChatListAdapter(
             parent,
             false
         )
-        return ChatViewHolder(binding, onChatClick, onAvatarVisible)
+        return ChatViewHolder(binding, requestedAvatarKeys, onChatClick, onAvatarVisible)
     }
 
     override fun onBindViewHolder(holder: ChatViewHolder, position: Int) {
@@ -30,12 +33,14 @@ class ChatListAdapter(
 
     class ChatViewHolder(
         private val binding: ItemChatBinding,
+        private val requestedAvatarKeys: MutableSet<String>,
         private val onChatClick: (ChatListItem) -> Unit,
         private val onAvatarVisible: (ChatListItem) -> Unit
     ) : RecyclerView.ViewHolder(binding.root) {
 
         fun bind(item: ChatListItem) {
-            if (item.avatarPath.isNullOrBlank()) {
+            val avatarKey = "${item.id}:${item.avatarFileId ?: 0}"
+            if (item.avatarPath.isNullOrBlank() && requestedAvatarKeys.add(avatarKey)) {
                 onAvatarVisible(item)
             }
             AvatarBinder.bind(

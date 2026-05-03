@@ -10,6 +10,8 @@ import java.util.Date
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArraySet
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
 object TdChatRepository : TdAuthClient.UpdateListener {
@@ -32,6 +34,9 @@ object TdChatRepository : TdAuthClient.UpdateListener {
     private val refreshInFlight = AtomicBoolean(false)
     private val pendingChats = ConcurrentHashMap.newKeySet<Long>()
     private val publishScheduled = AtomicBoolean(false)
+    private val publishInFlight = AtomicBoolean(false)
+    private val publishDirty = AtomicBoolean(false)
+    private val publishExecutor: ExecutorService = Executors.newSingleThreadExecutor()
 
     private var roomStore: RoomChatListStore? = null
     @Volatile
@@ -242,6 +247,36 @@ object TdChatRepository : TdAuthClient.UpdateListener {
     }
 
     private fun publish() {
+        if (!publishInFlight.compareAndSet(false, true)) {
+            publishDirty.set(true)
+            return
+        }
+
+        publishExecutor.execute {
+            val items = buildChatListSnapshot()
+            if (items == lastPublishedItems) {
+                if (items.isEmpty() && initialCacheLoaded && !publishedToListeners) {
+                    publishSnapshot()
+                }
+                finishPublish()
+                return@execute
+            }
+
+            lastPublishedItems = items
+            roomStore?.saveAsync(items)
+            publishSnapshot()
+            finishPublish()
+        }
+    }
+
+    private fun finishPublish() {
+        publishInFlight.set(false)
+        if (publishDirty.getAndSet(false)) {
+            publish()
+        }
+    }
+
+    private fun buildChatListSnapshot(): List<ChatListItem> {
         val tdItems = TdEntityCache.chatList()
             .mapNotNull { chat -> chat.toListItem(requestAvatar = false) }
             .sortedForChatList()
@@ -252,18 +287,7 @@ object TdChatRepository : TdAuthClient.UpdateListener {
                     item
                 }
             }
-        val items = mergeWithCachedItems(tdItems)
-
-        if (items == lastPublishedItems) {
-            if (items.isEmpty() && initialCacheLoaded && !publishedToListeners) {
-                publishSnapshot()
-            }
-            return
-        }
-        lastPublishedItems = items
-        roomStore?.saveAsync(items)
-
-        publishSnapshot()
+        return mergeWithCachedItems(tdItems)
     }
 
     private fun TdApi.Chat.toListItem(requestAvatar: Boolean): ChatListItem? {

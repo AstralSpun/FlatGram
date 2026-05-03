@@ -251,7 +251,7 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
                         return@send
                     }
                     putMessages(result.messages, shouldRequestSenders = !isOlderPage)
-                    persistMessages(chatId)
+                    persistTdMessages(result.messages)
                     publish(chatId)
                 }
 
@@ -301,6 +301,15 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
             rememberStoredOldest(chatId, items)
             roomStore?.saveAsync(items)
         }
+    }
+
+    private fun persistTdMessages(messages: Array<TdApi.Message>) {
+        if (messages.isEmpty()) return
+        val items = messages.map { it.toListItem() }
+        items.groupBy { it.chatId }.forEach { (chatId, chatItems) ->
+            rememberStoredOldest(chatId, chatItems)
+        }
+        roomStore?.saveAsync(items)
     }
 
     private fun putStoredItems(chatId: Long, items: List<MessageListItem>) {
