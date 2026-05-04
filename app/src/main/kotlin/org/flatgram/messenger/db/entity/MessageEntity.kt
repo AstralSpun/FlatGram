@@ -20,6 +20,7 @@ data class MessageEntity(
     val avatarFileId: Int?,
     val avatarPath: String?,
     val text: String,
+    val contentSnapshot: String?,
     val date: Int,
     val time: String,
     val isOutgoing: Boolean,

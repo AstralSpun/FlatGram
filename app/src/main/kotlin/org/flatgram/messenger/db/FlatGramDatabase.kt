@@ -13,7 +13,7 @@ import org.flatgram.messenger.db.entity.MessageEntity
 
 @Database(
     entities = [ChatEntity::class, MessageEntity::class],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class FlatGramDatabase : RoomDatabase() {
@@ -33,7 +33,7 @@ abstract class FlatGramDatabase : RoomDatabase() {
                     "flatgram.db"
                 )
                     .setJournalMode(JournalMode.WRITE_AHEAD_LOGGING)
-                    .addMigrations(MIGRATION_1_2)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                     .fallbackToDestructiveMigration(false)
                     .build()
                     .also { instance = it }
@@ -64,6 +64,12 @@ abstract class FlatGramDatabase : RoomDatabase() {
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_messages_chatId_date` ON `messages` (`chatId`, `date`)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_messages_chatId_id` ON `messages` (`chatId`, `id`)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_messages_updatedAt` ON `messages` (`updatedAt`)")
+            }
+        }
+
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `messages` ADD COLUMN `contentSnapshot` TEXT")
             }
         }
     }

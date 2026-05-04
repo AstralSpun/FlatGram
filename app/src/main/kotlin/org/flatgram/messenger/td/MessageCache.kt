@@ -14,6 +14,10 @@ internal class MessageCache(
         return messagesByChat[chatId]?.values.orEmpty()
     }
 
+    fun message(chatId: Long, messageId: Long): TdApi.Message? {
+        return messagesByChat[chatId]?.get(messageId)
+    }
+
     fun put(message: TdApi.Message): Boolean {
         val cache = messagesByChat.getOrPut(message.chatId) { ConcurrentHashMap() }
         return cache.put(message.id, message) !== message

@@ -53,10 +53,118 @@
             android:textStyle="bold"
             tools:text="Alice" />
 
+        <FrameLayout
+            android:id="@+id/messageMediaFrame"
+            android:layout_width="236dp"
+            android:layout_height="172dp"
+            android:layout_marginTop="3dp"
+            android:background="@drawable/bg_message_media"
+            android:clipToOutline="true"
+            android:visibility="gone"
+            tools:visibility="visible">
+
+            <ImageView
+                android:id="@+id/messageMediaImage"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:contentDescription="@null"
+                android:scaleType="centerCrop" />
+
+            <org.flatgram.messenger.adapter.AnimatedEmojiPlayerView
+                android:id="@+id/messageAnimatedEmojiPlayer"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/messageMediaPlaceholder"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:gravity="center"
+                android:padding="12dp"
+                android:textColor="?attr/colorOnSurfaceVariant"
+                android:textSize="14sp"
+                tools:text="Photo" />
+
+            <TextView
+                android:id="@+id/messageMediaBadge"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="bottom|end"
+                android:layout_margin="8dp"
+                android:background="@drawable/bg_unread_count"
+                android:paddingStart="8dp"
+                android:paddingTop="2dp"
+                android:paddingEnd="8dp"
+                android:paddingBottom="2dp"
+                android:textColor="?attr/colorOnPrimary"
+                android:textSize="12sp"
+                tools:text="00:12" />
+
+        </FrameLayout>
+
+        <LinearLayout
+            android:id="@+id/messageFileBox"
+            android:layout_width="236dp"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="3dp"
+            android:background="@drawable/bg_message_file"
+            android:gravity="center_vertical"
+            android:minHeight="62dp"
+            android:orientation="horizontal"
+            android:padding="10dp"
+            android:visibility="gone"
+            tools:visibility="gone">
+
+            <TextView
+                android:id="@+id/messageFileIcon"
+                android:layout_width="38dp"
+                android:layout_height="38dp"
+                android:background="@drawable/bg_unread_count"
+                android:gravity="center"
+                android:text="FILE"
+                android:textColor="?attr/colorOnPrimary"
+                android:textSize="10sp"
+                android:textStyle="bold" />
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="10dp"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <TextView
+                    android:id="@+id/messageFileName"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:ellipsize="middle"
+                    android:maxLines="1"
+                    android:textColor="?attr/colorOnSurface"
+                    android:textSize="14sp"
+                    android:textStyle="bold"
+                    tools:text="document.pdf" />
+
+                <TextView
+                    android:id="@+id/messageFileMeta"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:ellipsize="end"
+                    android:maxLines="1"
+                    android:textColor="?attr/colorOnSurfaceVariant"
+                    android:textSize="12sp"
+                    tools:text="1.2 MB" />
+
+            </LinearLayout>
+
+        </LinearLayout>
+
         <TextView
             android:id="@+id/messageText"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
             android:textColor="?attr/colorOnSurface"
             android:textSize="16sp"
             tools:text="Message text" />

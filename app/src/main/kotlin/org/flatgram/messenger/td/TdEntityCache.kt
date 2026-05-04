@@ -9,6 +9,15 @@ data class AvatarInfo(
     val path: String?
 )
 
+data class FileInfo(
+    val fileId: Int,
+    val path: String?,
+    val size: Long,
+    val expectedSize: Long,
+    val isDownloadingActive: Boolean,
+    val isDownloadingCompleted: Boolean
+)
+
 object TdEntityCache : TdAuthClient.UpdateListener {
 
     private val usersById = ConcurrentHashMap<Long, TdApi.User>()
@@ -81,6 +90,19 @@ object TdEntityCache : TdAuthClient.UpdateListener {
     fun user(userId: Long): TdApi.User? = usersById[userId]
 
     fun hasChat(chatId: Long): Boolean = chatsById.containsKey(chatId)
+
+    fun fileInfo(fileId: Int): FileInfo {
+        val file = filesById[fileId]
+        val local = file?.local
+        return FileInfo(
+            fileId = fileId,
+            path = local?.path?.takeIf { local.isDownloadingCompleted && it.isNotBlank() },
+            size = file?.size ?: 0L,
+            expectedSize = file?.expectedSize ?: 0L,
+            isDownloadingActive = local?.isDownloadingActive == true,
+            isDownloadingCompleted = local?.isDownloadingCompleted == true
+        )
+    }
 
     fun senderKey(sender: TdApi.MessageSender?): String {
         return when (sender) {
@@ -159,6 +181,12 @@ object TdEntityCache : TdAuthClient.UpdateListener {
                 }
             }
         }
+    }
+
+    fun requestFileById(fileId: Int, onLoaded: () -> Unit) {
+        if (fileId == 0) return
+        val file = filesById[fileId] ?: TdApi.File().apply { id = fileId }
+        requestFile(file, onLoaded)
     }
 
     private fun avatarFileForSenderKey(senderKey: String): TdApi.File? {

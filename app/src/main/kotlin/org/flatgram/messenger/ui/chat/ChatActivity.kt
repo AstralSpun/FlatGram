@@ -79,6 +79,9 @@ class ChatActivity : AppCompatActivity() {
         adapter = MessageAdapter(
             onAvatarVisible = { message ->
                 TdMessageRepository.requestAvatar(message.chatId, message.senderId, message.avatarFileId)
+            },
+            onMediaVisible = { message, fileIds ->
+                TdMessageRepository.requestMessageMedia(message.chatId, message.id, fileIds)
             }
         )
         layoutManager = LinearLayoutManager(this, RecyclerView.VERTICAL, true)

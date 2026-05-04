@@ -60,6 +60,12 @@ android {
                 }
             }
         }
+        externalNativeBuild {
+            cmake {
+                cppFlags.add("-std=c++17")
+                arguments.add("-DANDROID_STL=c++_shared")
+            }
+        }
     }
 
     buildTypes {
@@ -81,6 +87,12 @@ android {
         viewBinding = true
         buildConfig = true
     }
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.31.6"
+        }
+    }
 }
 
 dependencies {
@@ -90,6 +102,7 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.recyclerview)
     implementation(libs.material)
+    implementation(libs.kotlinx.coroutines.android)
 
     implementation(libs.td.lib)
     implementation(libs.androidx.room.runtime)

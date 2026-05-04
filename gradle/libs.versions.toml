@@ -9,6 +9,7 @@ recyclerview = "1.4.0"
 tdlib = "1.8.56"
 room = "2.8.4"
 ksp = "2.3.6"
+kotlinxCoroutines = "1.10.2"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -20,6 +21,7 @@ androidx-recyclerview = { group = "androidx.recyclerview", name = "recyclerview"
 td-lib = { group = "com.github.tdlibx", name = "td", version.ref = "tdlib" }
 androidx-room-runtime = { module = "androidx.room:room-runtime", version.ref = "room" }
 androidx-room-compiler = { module = "androidx.room:room-compiler", version.ref = "room" }
+kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "kotlinxCoroutines" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

@@ -38,6 +38,8 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
     private val chatListeners = ConcurrentHashMap<Long, CopyOnWriteArraySet<ChatListener>>()
     private val messageCache = MessageCache(MAX_CACHED_MESSAGES_PER_CHAT)
     private val storedItemsByChat = ConcurrentHashMap<Long, ConcurrentHashMap<Long, MessageListItem>>()
+    private val messageMediaIndex = ConcurrentHashMap<Int, MutableSet<MessageKey>>()
+    private val messageMediaIdsByMessage = ConcurrentHashMap<MessageKey, Set<Int>>()
     private val loadingInitial = ConcurrentHashMap<Long, AtomicBoolean>()
     private val loadingOlder = ConcurrentHashMap<Long, AtomicBoolean>()
     private val endReached = ConcurrentHashMap.newKeySet<Long>()
@@ -167,6 +169,17 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
         }
     }
 
+    fun requestMessageMedia(chatId: Long, messageId: Long, fileIds: Collection<Int>) {
+        fileIds
+            .filter { it != 0 }
+            .distinct()
+            .forEach { fileId ->
+                TdEntityCache.requestFileById(fileId) {
+                    refreshMessageMedia(chatId, messageId)
+                }
+            }
+    }
+
     fun loadInitial(chatId: Long) {
         endReached.remove(chatId)
         val loading = loadingInitial.getOrPut(chatId) { AtomicBoolean(false) }
@@ -256,6 +269,7 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
             is TdApi.UpdateFile -> {
                 TdEntityCache.putFile(update.file)
                 publishAffectedConversationsByAvatarFile(update.file.id)
+                publishAffectedConversationsByMediaFile(update.file.id)
             }
 
             is TdApi.UpdateMessageContent -> {
@@ -263,7 +277,8 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
                     message.content = update.newContent
                 }
                 val updatedStoredMessage = updateStoredItem(update.chatId, update.messageId) { item ->
-                    item.copy(text = MessageContentFormatter.format(update.newContent))
+                    val content = MessageContentMapper.map(update.newContent)
+                    item.copy(text = content.previewText(), content = content)
                 }
                 if (updatedStoredMessage && !updatedTdMessage) {
                     markForPersistence(update.chatId)
@@ -272,6 +287,7 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
             }
 
             is TdApi.UpdateMessageSendSucceeded -> {
+                unindexMessageMedia(update.message.chatId, update.oldMessageId)
                 messageCache.replace(update.message.chatId, update.oldMessageId, update.message)
                 putMessage(update.message)
                 removeStoredItem(update.message.chatId, update.oldMessageId)
@@ -281,6 +297,7 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
             }
 
             is TdApi.UpdateMessageSendFailed -> {
+                unindexMessageMedia(update.message.chatId, update.oldMessageId)
                 messageCache.replace(update.message.chatId, update.oldMessageId, update.message)
                 putMessage(update.message)
                 removeStoredItem(update.message.chatId, update.oldMessageId)
@@ -388,7 +405,10 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
     private fun putStoredItems(chatId: Long, items: List<MessageListItem>) {
         if (items.isEmpty()) return
         val storedItems = storedItemsByChat.getOrPut(chatId) { ConcurrentHashMap() }
-        items.forEach { item -> storedItems[item.id] = item }
+        items.forEach { item ->
+            storedItems[item.id] = item
+            indexMessageMedia(item)
+        }
         rememberStoredOldest(chatId, items)
     }
 
@@ -399,17 +419,23 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
     ): Boolean {
         val storedItems = storedItemsByChat[chatId] ?: return false
         val item = storedItems[messageId] ?: return false
-        storedItems[messageId] = block(item)
+        val updated = block(item)
+        storedItems[messageId] = updated
+        indexMessageMedia(updated)
         return true
     }
 
     private fun removeStoredItem(chatId: Long, messageId: Long) {
         storedItemsByChat[chatId]?.remove(messageId)
+        unindexMessageMedia(chatId, messageId)
     }
 
     private fun removeStoredItems(chatId: Long, messageIds: LongArray) {
         val storedItems = storedItemsByChat[chatId] ?: return
-        messageIds.forEach(storedItems::remove)
+        messageIds.forEach { messageId ->
+            storedItems.remove(messageId)
+            unindexMessageMedia(chatId, messageId)
+        }
     }
 
     private fun messageCount(chatId: Long): Int {
@@ -457,6 +483,7 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
         if (changed) {
             requestSender(message)
         }
+        indexMessageMedia(message.toListItem())
     }
 
     private fun putMessages(messages: Array<TdApi.Message>) {
@@ -465,6 +492,7 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
             if (changed) {
                 requestSender(message)
             }
+            indexMessageMedia(message.toListItem())
         }
     }
 
@@ -479,6 +507,9 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
         block: (TdApi.Message) -> Unit
     ): Boolean {
         if (!messageCache.update(chatId, messageId, block)) return false
+        messageCache.message(chatId, messageId)?.let { message ->
+            indexMessageMedia(message.toListItem())
+        }
         markForPersistence(chatId)
         publish(chatId)
         return true
@@ -549,6 +580,7 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
 
     private fun TdApi.Message.toListItem(): MessageListItem {
         val avatar = TdEntityCache.senderAvatar(senderId)
+        val contentUi = MessageContentMapper.map(content)
         return MessageListItem(
             id = id,
             chatId = chatId,
@@ -556,7 +588,8 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
             senderName = TdEntityCache.senderDisplayName(senderId),
             avatarFileId = avatar.fileId,
             avatarPath = avatar.path,
-            text = MessageContentFormatter.format(content),
+            text = contentUi.previewText(),
+            content = contentUi,
             date = date,
             time = date.toMessageTime(),
             isOutgoing = isOutgoing,
@@ -585,6 +618,57 @@ object TdMessageRepository : TdAuthClient.UpdateListener {
             )
         }
     }
+
+    private fun publishAffectedConversationsByMediaFile(fileId: Int) {
+        messageMediaIndex[fileId].orEmpty()
+            .map { it.chatId }
+            .toSet()
+            .forEach { chatId ->
+                markForPersistence(chatId)
+                publish(chatId)
+            }
+    }
+
+    private fun refreshMessageMedia(chatId: Long, messageId: Long) {
+        val updatedStoredMessage = updateStoredItem(chatId, messageId) { item ->
+            item.copy(content = item.content.withResolvedFilePaths())
+        }
+        if (updatedStoredMessage) {
+            markForPersistence(chatId)
+            publish(chatId)
+            return
+        }
+        publish(chatId)
+    }
+
+    private fun indexMessageMedia(message: MessageListItem) {
+        val key = MessageKey(message.chatId, message.id)
+        val fileIds = message.content.fileIds()
+        unindexMessageMedia(key.chatId, key.messageId)
+        if (fileIds.isEmpty()) return
+        messageMediaIdsByMessage[key] = fileIds
+        fileIds.forEach { fileId ->
+            val keys = messageMediaIndex.getOrPut(fileId) { ConcurrentHashMap.newKeySet() }
+            keys.add(key)
+        }
+    }
+
+    private fun unindexMessageMedia(chatId: Long, messageId: Long) {
+        val key = MessageKey(chatId, messageId)
+        val fileIds = messageMediaIdsByMessage.remove(key).orEmpty()
+        fileIds.forEach { fileId ->
+            val keys = messageMediaIndex[fileId] ?: return@forEach
+            keys.remove(key)
+            if (keys.isEmpty()) {
+                messageMediaIndex.remove(fileId, keys)
+            }
+        }
+    }
+
+    private data class MessageKey(
+        val chatId: Long,
+        val messageId: Long
+    )
 
     private fun List<MessageListItem>.asNewestFirst(): List<MessageListItem> {
         return asReversed()

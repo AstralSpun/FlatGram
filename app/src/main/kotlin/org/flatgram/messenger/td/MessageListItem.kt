@@ -8,6 +8,7 @@ data class MessageListItem(
     val avatarFileId: Int?,
     val avatarPath: String?,
     val text: String,
+    val content: MessageContentUi,
     val date: Int,
     val time: String,
     val isOutgoing: Boolean,
